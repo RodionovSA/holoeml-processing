@@ -1,0 +1,28 @@
+[project]
+name = "holoeml-processing"
+version = "0.1.0"
+description = "Process experimental data from holoeml project"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "RodionovSA", email = "sergeyrodionov93@gmail.com" },
+]
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "jupyter>=1.1.1",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.1",
+    "opencv-python>=5.0.0.93",
+    "pyyaml>=6.0.3",
+]
+
+[project.urls]
+Repository = "https://github.com/RodionovSA/holoeml-processing"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["phase"]
