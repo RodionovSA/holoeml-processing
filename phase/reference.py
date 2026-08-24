@@ -6,6 +6,8 @@ from typing import Optional
 
 import numpy as np
 
+from .backend import get_array_module, to_device, wrap, wrap_add, wrap_sub
+
 
 @dataclass
 class DifferenceResult:
@@ -39,7 +41,8 @@ class DifferenceResult:
 def subtract_reference(phi: np.ndarray, phi_ref: np.ndarray,
                         weight: Optional[np.ndarray] = None,
                         mask: Optional[np.ndarray] = None,
-                        ambiguous_ratio: float = 1.5) -> DifferenceResult:
+                        ambiguous_ratio: float = 1.5,
+                        device: str = "auto") -> DifferenceResult:
     """Combine a sample phase map with an independently-recovered reference.
 
     A reference measurement (same setup, no sample) is meant to capture
@@ -89,6 +92,11 @@ def subtract_reference(phi: np.ndarray, phi_ref: np.ndarray,
         the shared aberration is small relative to noise/sample signal,
         or the two measurements didn't actually share much of a common
         aberration to cancel.
+    device : {"auto", "cpu", "cuda"}, default "auto"
+        Where to run -- see :func:`phase.aia.aia`'s ``device`` parameter.
+        ``phi``/``phi_ref``/``weight``/``mask`` are uploaded if needed; the
+        result's ``phi`` field stays on that device rather than being
+        downloaded automatically.
 
     Returns
     -------
@@ -107,20 +115,24 @@ def subtract_reference(phi: np.ndarray, phi_ref: np.ndarray,
     if phi.shape != phi_ref.shape:
         raise ValueError(f"phi.shape {phi.shape} != phi_ref.shape {phi_ref.shape}")
 
+    phi = to_device(phi, device=device)
+    phi_ref = to_device(phi_ref, device=device)
+    xp = get_array_module(phi, phi_ref)
     H, W = phi.shape
-    w = np.ones((H, W)) if weight is None else np.clip(np.asarray(weight, float), 0, None)
+    w = (xp.ones((H, W)) if weight is None
+         else xp.clip(to_device(weight, device=device), 0, None))
     if mask is not None:
-        w = w * np.asarray(mask, bool)
-    if w.sum() <= 0:
-        w = np.ones((H, W))
+        w = w * to_device(mask, device=device, dtype=bool)
+    if float(w.sum()) <= 0:
+        w = xp.ones((H, W))
 
     def spread(d: np.ndarray) -> float:
-        mean_angle = np.angle(np.sum(w * np.exp(1j * d)))
-        resid = np.angle(np.exp(1j * (d - mean_angle)))
-        return float(np.sqrt(np.sum(w * resid**2) / np.sum(w)))
+        mean_angle = float(xp.angle(xp.sum(w * xp.exp(1j * d))))
+        resid = wrap(d - mean_angle)
+        return float(xp.sqrt(xp.sum(w * resid**2) / xp.sum(w)))
 
-    diff_same = np.angle(np.exp(1j * phi) * np.exp(-1j * phi_ref))
-    diff_flipped = np.angle(np.exp(1j * phi) * np.exp(1j * phi_ref))
+    diff_same = wrap_sub(phi, phi_ref)
+    diff_flipped = wrap_add(phi, phi_ref)
     spread_same = spread(diff_same)
     spread_flipped = spread(diff_flipped)
 

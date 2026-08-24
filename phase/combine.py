@@ -5,6 +5,7 @@ from typing import Optional
 
 import numpy as np
 
+from .backend import get_array_module, to_device
 from .carrier import remove_carrier
 from .reference import subtract_reference
 
@@ -44,8 +45,8 @@ class CombinedResult:
 
 
 def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
-                          reference: int = 0, carrier_kwargs: Optional[dict] = None
-                          ) -> CombinedResult:
+                          reference: int = 0, carrier_kwargs: Optional[dict] = None,
+                          device: str = "auto") -> CombinedResult:
     """Average independent, repeated phase measurements of the same object.
 
     A single ``aia()`` run's accuracy is limited by real acquisition-to-
@@ -107,7 +108,15 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
     carrier_kwargs : dict, optional
         Extra keyword arguments forwarded to the internal
         :func:`~phase.carrier.remove_carrier` calls (defaults to
-        ``defocus=True, refine_iters=10, n_blocks=10``).
+        ``defocus=True, refine_iters=10, n_blocks=10``, matching
+        ``remove_carrier``'s own defaults).
+    device : {"auto", "cpu", "cuda"}, default "auto"
+        Where to run -- see :func:`phase.aia.aia`'s ``device`` parameter.
+        Every array in ``phis``/``weights`` is uploaded if needed (they
+        should already share one device -- e.g. all from ``aia(...,
+        device="cuda")`` calls -- to avoid a per-acquisition transfer here);
+        the result's array fields stay on that device rather than being
+        downloaded automatically.
 
     Returns
     -------
@@ -118,8 +127,11 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
     if n < 2:
         raise ValueError(f"combine_acquisitions: need at least 2 acquisitions, got {n}")
 
+    phis = [to_device(p, device=device) for p in phis]
+    xp = get_array_module(*phis)
     H, W = phis[0].shape
-    ws = [np.ones((H, W)) if weights is None else np.clip(np.asarray(weights[i], float), 0, None)
+    ws = [xp.ones((H, W)) if weights is None
+          else xp.clip(to_device(weights[i], device=device), 0, None)
           for i in range(n)]
 
     # Sign resolution must happen on the *raw* maps, before carrier removal:
@@ -136,9 +148,13 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
     for i in range(n):
         if i == reference:
             continue
-        dr = subtract_reference(phis[reference], phis[i], weight=ws[reference])
+        dr = subtract_reference(phis[reference], phis[i], weight=ws[reference], device=device)
         if dr.sign == -1:
-            resolved[i] = np.angle(np.exp(-1j * phis[i]))
+            # -phis[i], not re-wrapped to (-pi, pi]: every later use of this
+            # map goes through exp(1j*phi) (here, and inside remove_carrier),
+            # which is exactly 2*pi-periodic, so the wrap is unobservable --
+            # skipping it avoids a needless exp/angle round-trip.
+            resolved[i] = -phis[i]
             sign_flips.append(i)
 
     aligned = resolved
@@ -146,16 +162,28 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
         ckw = dict(defocus=True, refine_iters=10, n_blocks=10)
         if carrier_kwargs:
             ckw.update(carrier_kwargs)
-        aligned = [remove_carrier(p, weight=ws[i], **ckw).phi for i, p in enumerate(aligned)]
+        aligned = [remove_carrier(p, weight=ws[i], device=device, **ckw).phi
+                   for i, p in enumerate(aligned)]
 
-    stack = np.stack([w * np.exp(1j * p) for w, p in zip(ws, aligned)], axis=0)
-    total_w = np.sum(ws, axis=0)
-    total_w = np.where(total_w > 0, total_w, np.finfo(float).eps)
-    mean_field = stack.sum(0) / total_w
+    # accumulate the weighted circular mean directly, rather than
+    # materializing an (n, H, W) complex stack just to sum it -- at n=5
+    # acquisitions that stack is 580 MB at the real ROI, memory this
+    # package's GPU target (a 4 GB Quadro) doesn't have to spare.
+    mean_field = total_w = None
+    for w, p in zip(ws, aligned):
+        term = w * xp.exp(1j * p)
+        mean_field = term if mean_field is None else mean_field + term
+        total_w = w if total_w is None else total_w + w
+    # keep the eps constant in each array's own dtype -- mixing in a float64
+    # scalar would silently upcast an otherwise-float32 pipeline via numpy's
+    # type promotion rules.
+    total_w = xp.where(total_w > 0, total_w, xp.asarray(xp.finfo(total_w.dtype).eps, total_w.dtype))
+    mean_field = mean_field / total_w
 
-    phi = np.angle(mean_field)
-    R = np.clip(np.abs(mean_field), 0, 1)
-    scatter = np.sqrt(np.clip(-2 * np.log(np.maximum(R, np.finfo(float).eps)), 0, None))
+    phi = xp.angle(mean_field)
+    R = xp.clip(xp.abs(mean_field), 0, 1)
+    R_floor = xp.asarray(xp.finfo(R.dtype).eps, R.dtype)
+    scatter = xp.sqrt(xp.clip(-2 * xp.log(xp.maximum(R, R_floor)), 0, None))
 
     return CombinedResult(phi=phi, scatter=scatter, mean_resultant=R,
                            n=n, sign_flips=sign_flips)

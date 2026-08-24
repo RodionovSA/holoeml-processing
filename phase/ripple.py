@@ -5,6 +5,7 @@ from typing import Optional
 
 import numpy as np
 
+from .backend import get_array_module, to_device, wrap
 from .carrier import remove_carrier
 
 
@@ -46,7 +47,8 @@ class RippleResult:
 def estimate_phase_ripple(phi: np.ndarray, mask: np.ndarray,
                            weight: Optional[np.ndarray] = None,
                            orders: tuple = (1, 2, 3, 4), nbins: int = 180,
-                           carrier_kwargs: Optional[dict] = None) -> RippleResult:
+                           carrier_kwargs: Optional[dict] = None,
+                           device: str = "auto") -> RippleResult:
     """Estimate a phase-locked ripple error from a region of known-flat phase.
 
     ``aia`` can leave a residual error that is a deterministic function of
@@ -102,53 +104,58 @@ def estimate_phase_ripple(phi: np.ndarray, mask: np.ndarray,
     carrier_kwargs : dict, optional
         Extra keyword arguments forwarded to the internal
         :func:`~phase.carrier.remove_carrier` call (defaults to
-        ``defocus=True, refine_iters=10, n_blocks=10``).
+        ``defocus=True, refine_iters=10, n_blocks=10``, matching
+        ``remove_carrier``'s own defaults).
+    device : {"auto", "cpu", "cuda"}, default "auto"
+        Where to run -- see :func:`phase.aia.aia`'s ``device`` parameter.
 
     Returns
     -------
     RippleResult
         See :class:`RippleResult`. Pass to :func:`apply_phase_ripple`.
     """
-    mask = np.asarray(mask, bool)
-    w = np.ones(phi.shape) if weight is None else np.clip(np.asarray(weight, float), 0, None)
+    phi = to_device(phi, device=device)
+    xp = get_array_module(phi)
+    mask = to_device(mask, device=device, dtype=bool)
+    w = xp.ones(phi.shape) if weight is None else xp.clip(to_device(weight, device=device), 0, None)
 
     ckw = dict(defocus=True, refine_iters=10, n_blocks=10)
     if carrier_kwargs:
         ckw.update(carrier_kwargs)
-    flat = remove_carrier(phi, weight=w, mask=mask, **ckw).phi
+    flat = remove_carrier(phi, weight=w, mask=mask, device=device, **ckw).phi
 
-    phi_w = np.angle(np.exp(1j * phi))
+    phi_w = wrap(phi)
     idx = mask & (w > 0)
     x = phi_w[idx]
     y = flat[idx]
     wx = w[idx]
-    rms_before = float(np.sqrt(np.average(y**2, weights=wx)))
+    rms_before = float(xp.sqrt(xp.average(y**2, weights=wx)))
 
     # circular-mean-bin the residual against phase before fitting -- robust
     # to per-pixel noise and keeps the regression small regardless of ROI size.
-    edges = np.linspace(-np.pi, np.pi, nbins + 1)
-    bin_idx = np.clip(np.digitize(x, edges) - 1, 0, nbins - 1)
-    bin_weight = np.bincount(bin_idx, weights=wx, minlength=nbins)
-    bin_c = np.bincount(bin_idx, weights=wx * np.cos(y), minlength=nbins)
-    bin_s = np.bincount(bin_idx, weights=wx * np.sin(y), minlength=nbins)
+    edges = xp.linspace(-xp.pi, xp.pi, nbins + 1)
+    bin_idx = xp.clip(xp.digitize(x, edges) - 1, 0, nbins - 1)
+    bin_weight = xp.bincount(bin_idx, weights=wx, minlength=nbins)
+    bin_c = xp.bincount(bin_idx, weights=wx * xp.cos(y), minlength=nbins)
+    bin_s = xp.bincount(bin_idx, weights=wx * xp.sin(y), minlength=nbins)
     valid = bin_weight > 0
-    lut = np.full(nbins, np.nan)
-    lut[valid] = np.arctan2(bin_s[valid], bin_c[valid])
-    bin_centers = -np.pi + (np.arange(nbins) + 0.5) * 2 * np.pi / nbins
+    lut = xp.full(nbins, xp.nan)
+    lut[valid] = xp.arctan2(bin_s[valid], bin_c[valid])
+    bin_centers = -xp.pi + (xp.arange(nbins) + 0.5) * 2 * xp.pi / nbins
 
-    cols = [np.ones(valid.sum())]
+    cols = [xp.ones(int(xp.sum(valid)))]
     for k in orders:
-        cols += [np.cos(k * bin_centers[valid]), np.sin(k * bin_centers[valid])]
-    D = np.column_stack(cols)
-    sw = np.sqrt(bin_weight[valid])
-    sol, *_ = np.linalg.lstsq(D * sw[:, None], lut[valid] * sw, rcond=None)
+        cols += [xp.cos(k * bin_centers[valid]), xp.sin(k * bin_centers[valid])]
+    D = xp.column_stack(cols)
+    sw = xp.sqrt(bin_weight[valid])
+    sol, *_ = xp.linalg.lstsq(D * sw[:, None], lut[valid] * sw, rcond=None)
 
     coeffs = {0: float(sol[0])}
     for i, k in enumerate(orders):
         coeffs[k] = (float(sol[1 + 2 * i]), float(sol[2 + 2 * i]))
 
     eps = _eval_ripple(x, coeffs, orders)
-    rms_after = float(np.sqrt(np.average(np.angle(np.exp(1j * (y - eps)))**2, weights=wx)))
+    rms_after = float(xp.sqrt(xp.average(wrap(y - eps)**2, weights=wx)))
 
     return RippleResult(coeffs=coeffs, orders=tuple(orders), bin_centers=bin_centers,
                          lut=lut, bin_weight=bin_weight, rms_before=rms_before,
@@ -157,10 +164,11 @@ def estimate_phase_ripple(phi: np.ndarray, mask: np.ndarray,
 
 def _eval_ripple(phi: np.ndarray, coeffs: dict, orders: tuple) -> np.ndarray:
     """Evaluate the fitted ``eps(phi) = c0 + sum_k a_k*cos(k*phi) + b_k*sin(k*phi)``."""
-    eps = np.full(np.shape(phi), coeffs[0], dtype=float)
+    xp = get_array_module(phi)
+    eps = xp.full(phi.shape, coeffs[0], dtype=xp.float64)
     for k in orders:
         a_k, b_k = coeffs[k]
-        eps = eps + a_k * np.cos(k * phi) + b_k * np.sin(k * phi)
+        eps = eps + a_k * xp.cos(k * phi) + b_k * xp.sin(k * phi)
     return eps
 
 
@@ -187,6 +195,6 @@ def apply_phase_ripple(phi: np.ndarray, ripple: RippleResult) -> np.ndarray:
     np.ndarray, shape (H, W)
         Corrected phase map, wrapped to ``(-pi, pi]``.
     """
-    phi_w = np.angle(np.exp(1j * phi))
+    phi_w = wrap(phi)
     eps = _eval_ripple(phi_w, ripple.coeffs, ripple.orders)
-    return np.angle(np.exp(1j * (phi_w - eps)))
+    return wrap(phi_w - eps)

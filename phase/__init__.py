@@ -8,9 +8,16 @@ Public API, re-exported here regardless of which submodule a name lives in:
 - :mod:`phase.ripple` -- ``estimate_phase_ripple``, ``apply_phase_ripple``,
   ``RippleResult``
 - :mod:`phase.combine` -- ``combine_acquisitions``, ``CombinedResult``
+- :mod:`phase.backend` -- NumPy/CuPy array-module dispatch shared by all of
+  the above; every function accepts a ``device="auto"|"cpu"|"cuda"``
+  argument (see e.g. :func:`aia`'s docstring) and returns result arrays on
+  whichever device it ran on. Use ``phase.backend.asnumpy`` to bring a
+  result field back to the host explicitly.
 """
 
+from . import backend
 from .aia import AIAResult, aia, measure_frame_contrast
+from .backend import asnumpy
 from .carrier import CarrierResult, remove_carrier
 from .combine import CombinedResult, combine_acquisitions
 from .reference import DifferenceResult, subtract_reference
@@ -29,4 +36,6 @@ __all__ = [
     "apply_phase_ripple",
     "CombinedResult",
     "combine_acquisitions",
+    "backend",
+    "asnumpy",
 ]

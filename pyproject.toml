@@ -17,8 +17,20 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
+[project.optional-dependencies]
+# GPU backend for `phase` (see phase/backend.py). Install the CUDA-major-
+# version wheel matching the *driver's* supported toolkit, not necessarily
+# the newest one: a CC < 7.5 GPU (e.g. Maxwell/Pascal/Volta, incl. the
+# Quadro K2200 this was written for) cannot run cupy-cuda13x binaries even
+# on a driver that advertises CUDA 13 support, since CUDA 13 dropped
+# offline compilation for those architectures -- use cupy-cuda12x there.
+cuda = ["cupy-cuda12x>=13.0,<15"]
+
 [project.urls]
 Repository = "https://github.com/RodionovSA/holoeml-processing"
+
+[dependency-groups]
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["hatchling"]
