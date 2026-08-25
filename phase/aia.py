@@ -120,20 +120,11 @@ def _chunked_sigma(I, A, X, xp, chunk: int = 1_000_000):
     return float(np.sqrt(ssq / (N * P)))
 
 
-def measure_frame_contrast(stack: np.ndarray, dc_radius: int = 8,
+def _carrier_dc_amplitudes(stack: np.ndarray, dc_radius: int = 8,
                             halfwin: tuple = (3, 4), frame_chunk: int = 8,
-                            dtype=None) -> np.ndarray:
-    """Measure each frame's fringe contrast directly from its spatial carrier.
-
-    ``aia`` assumes every frame shares one fringe-modulation map ``b(x,y)``;
-    in practice illumination drift, source-coherence roll-off over a long
-    scan, or per-shot exposure variation make the *true* per-frame contrast
-    ``g_n`` deviate from 1 -- sometimes by tens of percent. Forcing a shared
-    ``b`` then makes the least-squares fit trade contrast error off against
-    phase, producing an error that is a deterministic function of the local
-    phase (see ``aia``'s ``gain`` parameter). This function measures ``g_n``
-    directly from the data, independent of the AIA solve, so it can be
-    supplied as a fixed input rather than estimated jointly with phase.
+                            dtype=None) -> tuple:
+    """Per-frame carrier and DC amplitude, shared by :func:`measure_frame_contrast`
+    and :func:`measure_frame_visibility`.
 
     Method: the fringe pattern shows up as a carrier peak in each frame's
     2D spectrum (present even with no deliberate off-axis tilt, since the
@@ -145,7 +136,10 @@ def measure_frame_contrast(stack: np.ndarray, dc_radius: int = 8,
     conflate that jitter with a real contrast change. Integrating ``|F|^2``
     over a small neighborhood around the peak (located once, from the
     frame-summed spectrum) makes the estimate robust to that jitter while
-    still being insensitive to phase content elsewhere in the field.
+    still being insensitive to phase content elsewhere in the field. The
+    DC bin (``F[:, 0, 0]``, read off in the same pass, no extra FFT) is the
+    windowed-field analog of the background term ``a`` -- see
+    :func:`measure_frame_visibility`.
 
     Parameters
     ----------
@@ -182,10 +176,10 @@ def measure_frame_contrast(stack: np.ndarray, dc_radius: int = 8,
 
     Returns
     -------
-    np.ndarray, shape (N,)
-        Per-frame contrast, normalized so ``median(g) = 1``. Pass this as
-        ``aia(..., gain=g)``, or use ``gain="auto"`` to have ``aia`` call
-        this internally.
+    carrier_amp, dc_amp : np.ndarray, each shape (N,)
+        Per-frame carrier-peak amplitude and DC (zero-frequency) amplitude,
+        both un-normalized (raw FFT-domain magnitudes, not divided by
+        anything).
     """
     xp = get_array_module(stack)
     work_dtype = dtype if dtype is not None else _backend.default_dtype(xp)
@@ -210,17 +204,96 @@ def measure_frame_contrast(stack: np.ndarray, dc_radius: int = 8,
     rows = xp.asarray([(iy + k) % H for k in range(-hy, hy + 1)])
     c0, c1 = max(ix - hx, 0), min(ix + hx + 1, Wc)
 
-    # pass 2: per-frame amplitude at that peak, same chunking.
+    # pass 2: per-frame amplitude at the carrier peak and at DC, same chunking.
     amp_sq = xp.empty(N, dtype=xp.float64)
+    dc_amp = xp.empty(N, dtype=xp.float64)
     for s in range(0, N, frame_chunk):
         block = stack[s:s + frame_chunk].astype(work_dtype) * win
         Fc = xp.fft.rfft2(block, axes=(1, 2))
         amp_sq[s:s + block.shape[0]] = (
             xp.abs(Fc[:, rows, :][:, :, c0:c1]).astype(xp.float64) ** 2
         ).sum(axis=(1, 2))
+        dc_amp[s:s + block.shape[0]] = xp.abs(Fc[:, 0, 0]).astype(xp.float64)
 
-    amp = xp.sqrt(amp_sq)
+    return xp.sqrt(amp_sq), dc_amp
+
+
+def measure_frame_contrast(stack: np.ndarray, dc_radius: int = 8,
+                            halfwin: tuple = (3, 4), frame_chunk: int = 8,
+                            dtype=None) -> np.ndarray:
+    """Measure each frame's fringe contrast directly from its spatial carrier.
+
+    ``aia`` assumes every frame shares one fringe-modulation map ``b(x,y)``;
+    in practice illumination drift, source-coherence roll-off over a long
+    scan, or per-shot exposure variation make the *true* per-frame contrast
+    ``g_n`` deviate from 1 -- sometimes by tens of percent. Forcing a shared
+    ``b`` then makes the least-squares fit trade contrast error off against
+    phase, producing an error that is a deterministic function of the local
+    phase (see ``aia``'s ``gain`` parameter). This function measures ``g_n``
+    directly from the data, independent of the AIA solve, so it can be
+    supplied as a fixed input rather than estimated jointly with phase.
+
+    See :func:`_carrier_dc_amplitudes` for the carrier-peak method and all
+    parameters (identical here).
+
+    Returns
+    -------
+    np.ndarray, shape (N,)
+        Per-frame contrast, normalized so ``median(g) = 1``. Pass this as
+        ``aia(..., gain=g)``, or use ``gain="auto"`` to have ``aia`` call
+        this internally. Relative *within this stack only* -- use
+        :func:`measure_frame_visibility` instead to compare contrast across
+        separately-captured frames or stacks (e.g. a piezo coherence scan).
+    """
+    xp = get_array_module(stack)
+    amp, _ = _carrier_dc_amplitudes(stack, dc_radius, halfwin, frame_chunk, dtype)
     return amp / xp.median(amp)
+
+
+def measure_frame_visibility(stack: np.ndarray, dc_radius: int = 8,
+                              halfwin: tuple = (3, 4), frame_chunk: int = 8,
+                              dtype=None) -> np.ndarray:
+    """Measure each frame's fringe visibility, absolutely (not stack-relative).
+
+    ``aia`` fits ``I_n = a + g_n*b*cos(phi + delta_n)``, so the *true*
+    visibility of a fringe pattern is ``b/a`` (Michelson's
+    ``(Imax-Imin)/(Imax+Imin)``). :func:`measure_frame_contrast` measures
+    something proportional to ``b`` but normalizes it to ``median=1`` within
+    its input stack, which makes it useless for comparing contrast *across*
+    stacks -- e.g. one frame per position of a piezo coherence scan, where
+    the whole point is to compare visibility across many separate captures.
+
+    This returns ``2 * carrier_amp / dc_amp`` per frame (see
+    :func:`_carrier_dc_amplitudes`): ``dc_amp`` is the windowed field's
+    zero-frequency term, the same-pass analog of ``a``; the factor of 2
+    accounts for a real cosine's energy splitting between the ``+`` and
+    ``-`` carrier frequency, of which only the ``+`` side is integrated.
+    For a field that is exactly ``a + b*cos(carrier)`` with no other
+    spatial structure, this equals ``b/a`` exactly modulo windowing.
+
+    In practice it is *proportional* to ``b/a``, not exactly equal --
+    the Hann window used for peak-location suppresses the carrier and DC
+    terms by different net factors, and real object phase structure (not
+    just a pure linear carrier) spreads some of the carrier peak's energy
+    into neighboring bins outside ``halfwin``. Both effects are constant
+    for one fixed setup and ROI, so the value is safe to compare against
+    itself over time or across piezo position -- e.g. as the per-frame
+    metric for a coherence scan, or a coherence-zone drift log -- but is
+    not a calibrated absolute number to compare across different setups
+    or ROIs.
+
+    See :func:`_carrier_dc_amplitudes` for all parameters (identical here).
+
+    Returns
+    -------
+    np.ndarray, shape (N,)
+        Per-frame visibility, proportional to ``b/a``. Not normalized --
+        comparable across stacks, unlike :func:`measure_frame_contrast`.
+    """
+    xp = get_array_module(stack)
+    amp, dc_amp = _carrier_dc_amplitudes(stack, dc_radius, halfwin, frame_chunk, dtype)
+    dc_amp = xp.where(dc_amp > 0, dc_amp, xp.asarray(xp.finfo(xp.float64).eps))
+    return 2.0 * amp / dc_amp
 
 
 def aia(stack: np.ndarray, delta0: Optional[np.ndarray] = None,
@@ -345,61 +418,6 @@ def aia(stack: np.ndarray, delta0: Optional[np.ndarray] = None,
     conditioning -- not subtracting ``a`` -- is the correct lever for
     accuracy (see Notes).
 
-    Notes
-    -----
-    An earlier version of this function also tried subtracting the
-    background ``a`` in the frame step; this was removed because it
-    increased leaked oscillations into the recovered background rather
-    than reducing them. Chen & Kemao (2019) explain why: the background
-    decouples from the fringe terms when the phase-shift distribution is
-    well conditioned, so accuracy should be controlled via ``delta0``
-    spacing and frame count -- monitored here with ``kappa_p``/
-    ``kappa_ps`` -- rather than by subtracting a still-imperfect,
-    mid-iteration background estimate.
-
-    An earlier version also tried estimating ``g_n`` *jointly* with
-    ``(u, v)`` -- adding it as a free per-frame unknown in the frame step,
-    analogous to how ``delta_n`` is estimated -- and abandoned it for
-    locking onto "a self-consistent but incorrect fixed point". The reason
-    is structural, not a tuning issue: with ``g_n`` free, the pixel-step
-    model ``I_n = a + P_n*u + Q_n*v`` (writing ``P_n = g_n*cos(delta_n)``,
-    ``Q_n = g_n*sin(delta_n)``) is invariant under *any* invertible linear
-    transform ``T``: replacing ``(u, v) -> T(u, v)`` and
-    ``(P_n, Q_n) -> (P_n, Q_n)*T^-1`` for every frame leaves every
-    predicted ``I_n`` unchanged. Pinning the phase origin
-    (``delta[0] = 0``) and a contrast scale (e.g. ``median(g) = 1``) fixes
-    only 2 of that group's 4 degrees of freedom; the remaining 2 (a shear
-    plus a rotation/reflection ambiguity beyond the intended
-    ``phi -> -phi`` one, see :func:`~phase.reference.subtract_reference`)
-    are free to drift, and on real data measurably do: the recovered
-    ``(P_n, Q_n)`` collapse onto a sheared, anisotropic ellipse rather than
-    the intended circle, which corrupts ``phi = arctan2(-v, u)``
-    everywhere. This is why ``gain`` above requires ``g_n`` to be supplied
-    or measured independently of the AIA solve (see
-    :func:`measure_frame_contrast`) rather than fit alongside it -- an
-    independent measurement breaks the invariance the free-parameter
-    version could not.
-
-    A spatially-varying per-frame phase step,
-    ``delta_n(x, y) = d_n + p_n*x + q_n*y`` (e.g. from a reference mirror
-    tilting slightly as a piezo stage steps), was also investigated as a
-    possible source of residual error and is *not* worth modeling: measured
-    directly from real data (by coherently averaging each frame's
-    Takeda-demodulated field, relative to frame 0, over a coarse patch grid,
-    then plane-fitting the patch phases -- plain per-pixel or per-bin
-    gradient estimates are unusable here, since that field spans ~13 orders
-    of magnitude in amplitude and a naive weighted-gradient sum is dominated
-    by a handful of near-zero-amplitude pixels), the tilt was only ~5-8
-    degrees peak-to-peak, and holding ``(p_n, q_n)`` fixed at those measured
-    values in a per-pixel version of this solve changed a real null-test
-    residual (two independent bare-glass acquisitions, true difference
-    zero) by 0.002 degrees -- noise-level, not worth the added cost. The
-    residual that remains after ``gain`` is corrected is dominated by
-    genuine acquisition-to-acquisition random scatter (measured at ~1.15
-    degrees per acquisition on this setup) rather than any per-frame model
-    term; average multiple independent acquisitions of the same object
-    (see :func:`~phase.combine.combine_acquisitions`) to bring it down
-    further -- it was verified to follow the expected ``1/sqrt(k)`` scaling.
     """
     stack = to_device(stack, device=device)
     xp = get_array_module(stack)

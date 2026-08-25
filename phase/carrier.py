@@ -267,6 +267,7 @@ def _estimate_curvature(c: np.ndarray, w: np.ndarray, window: bool,
 
     # unknowns: [fx0, fy0, A=kxx/pi, B=kxy/(2*pi), C=kyy/pi]
     M = xp.zeros((2 * n, 5), dtype=xp.float64)
+    
     rhs = xp.zeros(2 * n, dtype=xp.float64)
     M[0::2, 0] = 1.0
     M[0::2, 2] = xc_u

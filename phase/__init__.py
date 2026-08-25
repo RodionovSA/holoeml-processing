@@ -2,7 +2,8 @@
 
 Public API, re-exported here regardless of which submodule a name lives in:
 
-- :mod:`phase.aia` -- ``aia``, ``measure_frame_contrast``, ``AIAResult``
+- :mod:`phase.aia` -- ``aia``, ``measure_frame_contrast``,
+  ``measure_frame_visibility``, ``AIAResult``
 - :mod:`phase.carrier` -- ``remove_carrier``, ``CarrierResult``
 - :mod:`phase.reference` -- ``subtract_reference``, ``DifferenceResult``
 - :mod:`phase.ripple` -- ``estimate_phase_ripple``, ``apply_phase_ripple``,
@@ -16,7 +17,7 @@ Public API, re-exported here regardless of which submodule a name lives in:
 """
 
 from . import backend
-from .aia import AIAResult, aia, measure_frame_contrast
+from .aia import AIAResult, aia, measure_frame_contrast, measure_frame_visibility
 from .backend import asnumpy
 from .carrier import CarrierResult, remove_carrier
 from .combine import CombinedResult, combine_acquisitions
@@ -27,6 +28,7 @@ __all__ = [
     "AIAResult",
     "aia",
     "measure_frame_contrast",
+    "measure_frame_visibility",
     "CarrierResult",
     "remove_carrier",
     "DifferenceResult",

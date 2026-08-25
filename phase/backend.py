@@ -5,13 +5,7 @@ and calls ``xp.`` throughout, so it runs unchanged on NumPy (CPU, always
 available) or CuPy (GPU, only if installed and a CUDA device is present) --
 whichever module the arrays handed to it already live on. This module is the
 only place that imports cupy, and it does so optionally: everything works
-with only numpy installed, which is what keeps the Mac/dev environment
-identical to the measurement PC's code path.
-
-See the "GPU transition" plan for the target hardware (a Quadro K2200) and
-why the default working dtype below is float32/complex64 rather than
-float64: FP64 throughput on that card is 1/32 of FP32, and float64 arrays
-don't fit its ~2.9 GB usable VRAM at the real ROI (2200x3296, N=30 frames).
+with only numpy installed.
 """
 
 import numpy as np
