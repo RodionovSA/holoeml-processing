@@ -50,19 +50,20 @@ def subtract_reference(phi: np.ndarray, phi_ref: np.ndarray,
     setup, so that subtracting it from a sample measurement's phase
     cancels that shared aberration and leaves only the sample-induced
     phase. This only works if ``phi`` and ``phi_ref`` share a common sign
-    convention -- and :func:`~phase.aia.aia` cannot guarantee that on its
-    own.
+    convention -- and a phase-shifting solve (see :mod:`phase.solver`)
+    cannot guarantee that on its own.
 
     Why not: the phase-shifting model ``I_n = a + b*cos(phi + delta_n)``
-    is exactly invariant under ``(phi, delta) -> (-phi, -delta)`` for
-    every frame at once (cosine is even), so ``aia`` has no way to tell
-    ``+phi`` from ``-phi`` from intensity data alone. Each independent
-    ``aia()`` call converges to *one* of these two mirror-image branches,
-    and nothing forces two separate runs (e.g. sample vs. reference) to
-    land on the same one. If they land on opposite branches, naive
-    ``phi - phi_ref`` *adds* the shared aberration instead of canceling
-    it (``phi_true - (-phi_true) = 2*phi_true``), which can make the
-    result visibly worse than not subtracting at all.
+    (Eq. (8) of ``docs/interference_model.md``) is exactly invariant under
+    ``(phi, delta) -> (-phi, -delta)`` for every frame at once (cosine is
+    even), so no method solving this model from intensity data alone can
+    tell ``+phi`` from ``-phi``. Each independent solve converges to *one*
+    of these two mirror-image branches, and nothing forces two separate
+    runs (e.g. sample vs. reference) to land on the same one. If they land
+    on opposite branches, naive ``phi - phi_ref`` *adds* the shared
+    aberration instead of canceling it
+    (``phi_true - (-phi_true) = 2*phi_true``), which can make the result
+    visibly worse than not subtracting at all.
 
     This function resolves the branch automatically: it computes both
     ``phi - phi_ref`` and ``phi + phi_ref`` (wrap-safe, in the complex
@@ -74,7 +75,7 @@ def subtract_reference(phi: np.ndarray, phi_ref: np.ndarray,
     Parameters
     ----------
     phi : np.ndarray, shape (H, W)
-        Sample phase map, in ``(-pi, pi]`` (e.g. ``AIAResult.phi``).
+        Sample phase map, in ``(-pi, pi]`` (e.g. :attr:`phase.solver.PhaseResult.phi`).
     phi_ref : np.ndarray, shape (H, W)
         Reference phase map, same shape as ``phi``.
     weight : np.ndarray, shape (H, W), optional
@@ -93,10 +94,10 @@ def subtract_reference(phi: np.ndarray, phi_ref: np.ndarray,
         or the two measurements didn't actually share much of a common
         aberration to cancel.
     device : {"auto", "cpu", "cuda"}, default "auto"
-        Where to run -- see :func:`phase.aia.aia`'s ``device`` parameter.
-        ``phi``/``phi_ref``/``weight``/``mask`` are uploaded if needed; the
-        result's ``phi`` field stays on that device rather than being
-        downloaded automatically.
+        Where to run -- see :func:`phase.backend.to_device` for the full
+        explanation. ``phi``/``phi_ref``/``weight``/``mask`` are uploaded if
+        needed; the result's ``phi`` field stays on that device rather than
+        being downloaded automatically.
 
     Returns
     -------

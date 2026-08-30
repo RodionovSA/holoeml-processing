@@ -51,11 +51,13 @@ def estimate_phase_ripple(phi: np.ndarray, mask: np.ndarray,
                            device: str = "auto") -> RippleResult:
     """Estimate a phase-locked ripple error from a region of known-flat phase.
 
-    ``aia`` can leave a residual error that is a deterministic function of
-    the recovered phase itself, ``eps(phi)``, rather than of position --
-    the signature of an imperfect frame model (e.g. per-frame contrast
-    treated as constant when it isn't, see ``aia``'s ``gain`` parameter).
-    Because it tracks phase, not position, it doesn't average out spatially
+    A phase-recovery solve can leave a residual error that is a
+    deterministic function of the recovered phase itself, ``eps(phi)``,
+    rather than of position -- the signature of an imperfect frame model
+    (e.g. per-frame contrast treated as constant when it isn't; see
+    :class:`phase.solver.PhaseConfig`'s ``use_g`` and
+    :func:`phase.utils.measure_frame_contrast`). Because it tracks phase,
+    not position, it doesn't average out spatially
     and isn't separable from real structure by a spatial filter (e.g. FFT)
     when the two overlap in spatial frequency -- but it *is* separable in
     the phase domain, where the real object signal has no reason to
@@ -82,8 +84,8 @@ def estimate_phase_ripple(phi: np.ndarray, mask: np.ndarray,
     Parameters
     ----------
     phi : np.ndarray, shape (H, W)
-        Wrapped phase map to estimate the ripple from (e.g. ``AIAResult.phi``,
-        *before* carrier removal).
+        Wrapped phase map to estimate the ripple from (e.g.
+        :attr:`phase.solver.PhaseResult.phi`, *before* carrier removal).
     mask : np.ndarray, shape (H, W)
         Boolean (or 0/1) map selecting the known-flat region (e.g. thresholded
         modulation map, or a hand-drawn ROI excluding the structure).
@@ -107,7 +109,8 @@ def estimate_phase_ripple(phi: np.ndarray, mask: np.ndarray,
         ``defocus=True, refine_iters=10, n_blocks=10``, matching
         ``remove_carrier``'s own defaults).
     device : {"auto", "cpu", "cuda"}, default "auto"
-        Where to run -- see :func:`phase.aia.aia`'s ``device`` parameter.
+        Where to run -- see :func:`phase.backend.to_device` for the full
+        explanation.
 
     Returns
     -------

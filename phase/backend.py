@@ -42,8 +42,9 @@ def is_cupy(xp) -> bool:
 def to_device(x, device: str = "auto", dtype=None):
     """Move array-like ``x`` onto the requested device, returning an ndarray.
 
-    Only meant for host->device staging at a public entry point (``aia``,
-    ``remove_carrier``, ``combine_acquisitions``) -- everything else should
+    Only meant for host->device staging at a public entry point (e.g.
+    :meth:`phase.solver.PhaseSolver.fit`, :func:`phase.carrier.remove_carrier`,
+    :func:`phase.combine.combine_acquisitions`) -- everything else should
     just call :func:`get_array_module` on whatever array it's handed rather
     than moving data around mid-pipeline.
 
@@ -154,9 +155,9 @@ def default_dtype(xp, complex_: bool = False):
     Applies to the large (N, P)-shaped arrays throughout this package.
     Small per-iteration linear-algebra objects (3x3 Gram matrices, frame-count
     vectors, condition numbers, reduction accumulators) should stay float64
-    regardless of this default -- see the Notes in :func:`phase.aia.aia` and
-    :func:`phase.carrier.remove_carrier` for why float32 there is safe and
-    float64 for the big arrays is not (memory, and FP64 throughput on
-    non-datacenter GPUs).
+    regardless of this default -- see the ``dtype`` parameter of
+    :func:`phase.methods.aia.aia` for why float32 there is safe and float64
+    for the big arrays is not (memory, and FP64 throughput on non-datacenter
+    GPUs).
     """
     return xp.complex64 if complex_ else xp.float32

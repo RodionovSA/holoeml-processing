@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 from phase import (
-    aia,
+    PhaseConfig,
+    PhaseSolver,
     apply_phase_ripple,
     combine_acquisitions,
     estimate_phase_ripple,
@@ -52,22 +53,27 @@ def make_stack(H=48, W=64, N=12, seed=0, sign=1.0, dtype=np.float32):
 class TestAIA:
     def test_recovers_known_phase(self):
         stack, truth = make_stack()
-        r = aia(stack, gain=truth["g"])
-        assert r.converged
+        # supply the exact known gain (PhaseConfig(g=...)) to isolate the
+        # AIA solve's accuracy from gain-estimation accuracy.
+        solver = PhaseSolver(PhaseConfig(g=truth["g"])).fit(stack)
+        assert solver.method_param_.converged
         # aia has an exact (phi, delta) -> (-phi, -delta) sign ambiguity
         # (I_n = a + b*cos(phi+delta_n) is invariant under it) -- accept
         # either branch.
-        err_same = circ_rms_deg(r.phi, truth["phi"])
-        err_flip = circ_rms_deg(r.phi, -truth["phi"])
+        err_same = circ_rms_deg(solver.phi_, truth["phi"])
+        err_flip = circ_rms_deg(solver.phi_, -truth["phi"])
         assert min(err_same, err_flip) < 0.5
 
     def test_dtype_float32_close_to_float64(self):
         stack, truth = make_stack()
-        r64 = aia(stack, gain=truth["g"], dtype=np.float64)
-        r32 = aia(stack, gain=truth["g"], dtype=np.float32)
-        assert circ_rms_deg(r32.phi, r64.phi) < 1e-2
-        assert r32.iters_run == r64.iters_run
-        assert r32.converged == r64.converged
+        # use_g=False (fixed g=1) isolates dtype effects in the solve itself
+        # from any dtype-dependent variation in gain estimation.
+        config = PhaseConfig(use_g=False)
+        r64 = PhaseSolver(config, dtype=np.float64).fit(stack)
+        r32 = PhaseSolver(config, dtype=np.float32).fit(stack)
+        assert circ_rms_deg(r32.phi_, r64.phi_) < 1e-2
+        assert r32.method_param_.iters_run == r64.method_param_.iters_run
+        assert r32.method_param_.converged == r64.method_param_.converged
 
     def test_gain_auto_matches_supplied_gain_ranking(self):
         stack, truth = make_stack(seed=1)
@@ -82,12 +88,12 @@ class TestAIA:
             pytest.skip("cupy is installed in this environment")
         stack, _ = make_stack(H=8, W=8, N=6)
         with pytest.raises(RuntimeError):
-            aia(stack, device="cuda")
+            PhaseSolver(PhaseConfig(), device="cuda").fit(stack)
 
     def test_bad_device_raises(self):
         stack, _ = make_stack(H=8, W=8, N=6)
         with pytest.raises(ValueError):
-            aia(stack, device="tpu")
+            PhaseSolver(PhaseConfig(), device="tpu").fit(stack)
 
 
 class TestCarrier:

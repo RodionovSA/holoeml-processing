@@ -49,23 +49,25 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
                           device: str = "auto") -> CombinedResult:
     """Average independent, repeated phase measurements of the same object.
 
-    A single ``aia()`` run's accuracy is limited by real acquisition-to-
+    A single phase-recovery run's accuracy is limited by real acquisition-to-
     acquisition randomness (vibration, air currents, source noise) that does
     not average out within one run, only across independent runs -- unlike
     per-frame model errors (contrast, phase-step), which are systematic
     within a run and need a better model rather than averaging (see
-    :func:`~phase.aia.aia`'s ``gain`` parameter and its Notes on per-frame
-    tilt). Verified on real repeated bare-glass acquisitions: this random
-    component was ~1.15 degrees per acquisition and averaging brought a
-    null-test difference down following the expected ``1/sqrt(k)`` scaling
-    (1.81 degrees for 1 acquisition vs. 1.30 degrees for an average of 2).
+    :class:`phase.solver.PhaseConfig`'s ``use_g`` and
+    :func:`phase.utils.measure_frame_contrast`). Verified on repeated
+    bare-glass acquisitions: this random component was ~1.15 degrees per
+    acquisition and averaging brought a null-test difference down following
+    the expected ``1/sqrt(k)`` scaling (1.81 degrees for 1 acquisition vs.
+    1.30 degrees for an average of 2).
 
     Three things must be resolved before a plain average of wrapped phase
     maps means anything, all handled here using existing functions in this
     package:
 
-    1. **Sign branch** -- each ``aia()`` run independently lands on ``+phi``
-       or ``-phi`` (see :func:`~phase.reference.subtract_reference`). Every
+    1. **Sign branch** -- each phase-recovery run independently lands on
+       ``+phi`` or ``-phi`` (see :func:`~phase.reference.subtract_reference`).
+       Every
        map is resolved against ``phis[reference]`` the same way
        ``subtract_reference`` does, and flipped if that gives lower spread;
        see ``sign_flips``. This is done on the *raw* input maps, before
@@ -90,13 +92,15 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
     ----------
     phis : sequence of np.ndarray, each shape (H, W)
         Independently recovered phase maps of the *same* object (e.g. one
-        per repeated scan). Pass ``AIAResult.phi`` from separate ``aia()``
-        calls -- run ``aia`` on one stack at a time and keep only ``phi``/
-        ``b``, rather than holding every raw stack in memory at once.
+        per repeated scan). Pass :attr:`phase.solver.PhaseResult.phi` from
+        separate :meth:`~phase.solver.PhaseSolver.fit` calls -- fit one
+        stack at a time and keep only ``phi``/``b``, rather than holding
+        every raw stack in memory at once.
     weights : sequence of np.ndarray, each shape (H, W), optional
         Per-acquisition, per-pixel reliability (e.g. each acquisition's
-        ``AIAResult.b``). Used both for the carrier-removal step and the
-        final weighted circular mean. Defaults to uniform weight.
+        :attr:`phase.solver.PhaseResult.b`). Used both for the
+        carrier-removal step and the final weighted circular mean. Defaults
+        to uniform weight.
     align_carrier : bool, default True
         Run :func:`~phase.carrier.remove_carrier` (with ``defocus=True``)
         on each map before combining. Turn off only if the maps are
@@ -111,12 +115,12 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
         ``defocus=True, refine_iters=10, n_blocks=10``, matching
         ``remove_carrier``'s own defaults).
     device : {"auto", "cpu", "cuda"}, default "auto"
-        Where to run -- see :func:`phase.aia.aia`'s ``device`` parameter.
-        Every array in ``phis``/``weights`` is uploaded if needed (they
-        should already share one device -- e.g. all from ``aia(...,
-        device="cuda")`` calls -- to avoid a per-acquisition transfer here);
-        the result's array fields stay on that device rather than being
-        downloaded automatically.
+        Where to run -- see :func:`phase.backend.to_device` for the full
+        explanation. Every array in ``phis``/``weights`` is uploaded if
+        needed (they should already share one device -- e.g. all recovered
+        by ``PhaseSolver(config, device="cuda")`` calls -- to avoid a
+        per-acquisition transfer here); the result's array fields stay on
+        that device rather than being downloaded automatically.
 
     Returns
     -------
@@ -167,8 +171,8 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
 
     # accumulate the weighted circular mean directly, rather than
     # materializing an (n, H, W) complex stack just to sum it -- at n=5
-    # acquisitions that stack is 580 MB at the real ROI, memory this
-    # package's GPU target (a 4 GB Quadro) doesn't have to spare.
+    # acquisitions and a several-megapixel ROI that stack can already reach
+    # several hundred MB, memory worth avoiding on a memory-constrained GPU.
     mean_field = total_w = None
     for w, p in zip(ws, aligned):
         term = w * xp.exp(1j * p)

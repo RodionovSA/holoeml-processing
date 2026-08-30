@@ -51,15 +51,14 @@ def _next_smooth(n: int, factors=(2, 3, 5, 7)) -> int:
     """Smallest ``m >= n`` whose only prime factors are in ``factors``.
 
     Used to zero-pad the *coarse* peak-search FFT below to a size cuFFT (and
-    pocketfft) handle efficiently. ``H, W`` at the real acquisition size
-    (2200, 3296) factor as ``2^3*5^2*11`` and ``2^5*103`` -- the 11 and 103
-    push both onto a slow mixed-radix/Bluestein path. Padding to the next
-    7-smooth size (2200->2205, 3296->3360) measured ~1.8x faster on this
-    machine's FFT alone, and is safe: the coarse FFT only has to land the
-    peak within about one bin of the true carrier, since
-    :func:`_estimate_tilt`'s closed-form refine then converges to the exact
-    same fixed point regardless of which nearby bin it started from
-    (verified on real data).
+    pocketfft) handle efficiently. At a full-sensor acquisition size such as
+    ``(2200, 3296)``, ``H, W`` factor as ``2^3*5^2*11`` and ``2^5*103`` -- the
+    11 and 103 push both onto a slow mixed-radix/Bluestein path. Padding to
+    the next 7-smooth size (2200->2205, 3296->3360) measured ~1.8x faster in
+    testing, and is safe: the coarse FFT only has to land the peak within
+    about one bin of the true carrier, since :func:`_estimate_tilt`'s
+    closed-form refine then converges to the exact same fixed point
+    regardless of which nearby bin it started from.
     """
     k = n
     while True:
@@ -99,9 +98,9 @@ def _estimate_tilt(c: np.ndarray, w: np.ndarray, window: bool, refine_iters: int
     defocus pre-estimation -- see :func:`remove_carrier`'s Algorithm section
     (steps 1-2) for the coarse-FFT + wrap-safe-refine method.
 
-    Algorithm note: the residual-tilt refine below is a *closed form*, not
-    the literal per-iteration re-demodulation the original implementation
-    used. In ``sum(w_pair * d[...,1:] * conj(d[...,:-1]))`` with
+    Algorithm note: the residual-tilt refine below is a *closed form*, not a
+    literal per-iteration re-demodulation of the full field. In
+    ``sum(w_pair * d[...,1:] * conj(d[...,:-1]))`` with
     ``d = c * exp(-2*pi*i*(fx*x + fy*y))``, the position-dependent phase
     factor is identical on both members of every neighboring-pixel pair and
     cancels except for the fixed 1-pixel step between them, so the whole sum
@@ -110,8 +109,8 @@ def _estimate_tilt(c: np.ndarray, w: np.ndarray, window: bool, refine_iters: int
     the current ``(fx, fy)`` estimate at all (same for ``Sy`` down rows).
     ``Sx``/``Sy`` are therefore computed once, and the fixed-point iteration
     that follows runs on their two (scalar) angles rather than re-summing
-    the full field every pass -- bit-identical to the original in float64
-    (verified against real data: 0 and 1.4e-17 rad difference in fx, fy)
+    the full field every pass -- exact to float64 precision (matching a
+    direct per-iteration re-demodulation to within 1.4e-17 rad in fx, fy)
     at a fraction of the memory traffic, and with zero further GPU kernel
     launches once ``Sx``/``Sy`` are known.
     """
@@ -174,15 +173,18 @@ def _estimate_curvature(c: np.ndarray, w: np.ndarray, window: bool,
     reshaped into a batch dimension instead of gathered with ``np.ix_``
     (which forces a copy per block).
 
-    Unlike :func:`_estimate_tilt`, this is *not* bit-identical to the
-    original per-block-loop implementation -- the different block boundaries
-    (equal-size crop vs. ``array_split``'s ragged groups, plus dropped edge
-    pixels) shift each block's local tilt estimate slightly, which the
-    regression then propagates into ``kxx, kyy, kxy``. Measured on real data
-    (a full ``remove_carrier(defocus=True)`` call, ``n_blocks=10``): up to
-    ~7% relative change in the fitted curvature coefficients, translating to
-    a 0.06 deg RMS / 0.24 deg max change in the final ``phi`` -- about 5% of
-    this setup's ~1.15 deg/acquisition scatter floor, and well within it.
+    Unlike :func:`_estimate_tilt`, this is *not* bit-identical to a
+    per-block-loop implementation using ``np.array_split`` for the block
+    boundaries -- the different block boundaries (equal-size crop vs.
+    ``array_split``'s ragged groups, plus dropped edge pixels) shift each
+    block's local tilt estimate slightly, which the regression then
+    propagates into ``kxx, kyy, kxy``. Measured on a full
+    ``remove_carrier(defocus=True)`` call at ``n_blocks=10``: up to ~7%
+    relative change in the fitted curvature coefficients, translating to a
+    0.06 deg RMS / 0.24 deg max change in the final ``phi`` -- about 5% of
+    the ~1.15 deg/acquisition scatter floor measured in
+    :func:`~phase.combine.combine_acquisitions`'s docstring, and well
+    within it.
     """
     xp = get_array_module(c, w)
     H, W = c.shape
@@ -345,13 +347,13 @@ def remove_carrier(phi: np.ndarray, weight: Optional[np.ndarray] = None,
     Parameters
     ----------
     phi : np.ndarray, shape (H, W)
-        Wrapped phase map, in ``(-pi, pi]`` (e.g. ``AIAResult.phi``).
+        Wrapped phase map, in ``(-pi, pi]`` (e.g. :attr:`phase.solver.PhaseResult.phi`).
     weight : np.ndarray, shape (H, W), optional
         Per-pixel reliability used only for *estimating* the carrier (e.g.
-        ``AIAResult.b``, the modulation map) -- down-weights noisy,
-        low-modulation pixels so they don't bias the fit. Negative values
-        are clipped to 0. Does not affect the returned ``phi``, which is
-        always computed from the unweighted field.
+        :attr:`phase.solver.PhaseResult.b`, the modulation map) --
+        down-weights noisy, low-modulation pixels so they don't bias the
+        fit. Negative values are clipped to 0. Does not affect the returned
+        ``phi``, which is always computed from the unweighted field.
     mask : np.ndarray, shape (H, W), optional
         Boolean (or 0/1) map; pixels where it is falsey are excluded from
         estimation, same effect as ``weight=0`` there. Combined with
@@ -359,8 +361,10 @@ def remove_carrier(phi: np.ndarray, weight: Optional[np.ndarray] = None,
     refine_iters : int, default 10
         Number of sub-pixel refinement iterations after each coarse FFT
         step (both the final full-field estimate and, if ``defocus=True``,
-        each per-block estimate). Matches every call site in this package;
-        raised from the original default of 5 for that reason.
+        each per-block estimate). The closed-form fixed-point refine (see
+        Algorithm) typically converges in well under 10 iterations for a
+        carrier that isn't near the Nyquist limit; raise it for a very high
+        carrier, or lower it if profiling shows it converges sooner.
     window : bool, default True
         Apply a 2D Hann window before each coarse FFT to reduce spectral
         leakage from the field's edges (recommended; skipped automatically
@@ -368,22 +372,19 @@ def remove_carrier(phi: np.ndarray, weight: Optional[np.ndarray] = None,
     defocus : bool, default True
         Also fit and remove a quadratic curvature term
         ``kxx*x^2 + kyy*y^2 + kxy*x*y``, via the block-regression method
-        above. Defaults on -- every call site in this package (and its
-        callers in :mod:`phase.combine` and :mod:`phase.ripple`) already
-        passed ``defocus=True`` explicitly; matching the default avoids the
-        signature silently disagreeing with actual usage. Worth disabling
-        only for a field known to have no curvature term to begin with.
+        above. Defaults on since most off-axis interferometry setups carry
+        at least mild curvature from the reference wavefront; disable only
+        for a field known to be curvature-free.
     n_blocks : int, default 10
         Grid size (``n_blocks x n_blocks``) for the curvature pre-estimate.
         Only used when ``defocus=True``. Needs at least 4 blocks with
         usable weight to fit (5 unknowns, 2 equations/block); falls back
         to ``kxx=kyy=kxy=0`` (with a warning) if fewer are available --
         e.g. too small an image for the requested grid, or ``weight``/
-        ``mask`` leaving too little usable area. Matches every call site;
-        raised from the original default of 6 for that reason.
+        ``mask`` leaving too little usable area.
     device : {"auto", "cpu", "cuda"}, default "auto"
-        Where to run -- see :func:`phase.aia.aia`'s ``device`` parameter for
-        the full explanation. ``phi``/``weight``/``mask`` are uploaded if
+        Where to run -- see :func:`phase.backend.to_device` for the full
+        explanation. ``phi``/``weight``/``mask`` are uploaded if
         needed; the result's ``phi`` field stays on that same device rather
         than being downloaded automatically.
 
