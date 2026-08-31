@@ -15,6 +15,7 @@ import numpy as np
 from .backend import get_array_module, to_device
 from .utils import measure_frame_contrast
 from .methods import METHOD_REGISTRY, MethodParam
+from .methods.base import _fmt_value
 
 METHODS = list(METHOD_REGISTRY)
 
@@ -65,6 +66,46 @@ class PhaseResult:
     alpha: np.ndarray
     method_param: MethodParam
     reconstruction_error: float
+
+    def to_device(self, device: str = "auto", dtype=None) -> "PhaseResult":
+        """Return a copy with every array field moved to the given device.
+
+        Parameters
+        ----------
+        device : {"auto", "cpu", "cuda"}, default "auto"
+            See :func:`phase.backend.to_device`.
+        dtype : dtype, optional
+            Cast while moving; see :func:`phase.backend.to_device`.
+
+        Returns
+        -------
+        PhaseResult
+            A new instance with ``phi, a, b, delta, g, alpha`` moved to
+            ``device`` (and cast to ``dtype`` if given). ``method_param``
+            and ``reconstruction_error`` are plain Python scalars for every
+            currently registered method, so they're carried over unchanged.
+        """
+        return PhaseResult(
+            phi=to_device(self.phi, device=device, dtype=dtype),
+            a=to_device(self.a, device=device, dtype=dtype),
+            b=to_device(self.b, device=device, dtype=dtype),
+            delta=to_device(self.delta, device=device, dtype=dtype),
+            g=to_device(self.g, device=device, dtype=dtype),
+            alpha=to_device(self.alpha, device=device, dtype=dtype),
+            method_param=self.method_param,
+            reconstruction_error=self.reconstruction_error,
+        )
+
+    def print_summary(self) -> None:
+        """Print method_param's summary, then reconstruction_error.
+
+        Delegates the method-specific diagnostics to
+        :meth:`MethodParam.print_summary` (overridden per method), then
+        prints ``reconstruction_error`` -- always a :class:`PhaseResult`
+        field, so identical across every method.
+        """
+        self.method_param.print_summary()
+        print(f"reconstruction_error: {_fmt_value(self.reconstruction_error)}")
 
 @dataclass(frozen=True)
 class PhaseConfig:

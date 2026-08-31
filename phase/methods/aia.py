@@ -8,7 +8,7 @@ import numpy as np
 
 from .. import backend as _backend
 from ..backend import get_array_module, wrap
-from .base import MethodParam
+from .base import MethodParam, _fmt_value
 
 
 @dataclass
@@ -51,6 +51,13 @@ class AIAParam(MethodParam):
     predicted_rms: float
     iters_run: int
     converged: bool
+
+    def print_summary(self) -> None:
+        """Print converged, kappa_p, kappa_ps, predicted_rms -- in that order, one per line."""
+        print(f"converged:     {_fmt_value(self.converged)}")
+        print(f"kappa_p:       {_fmt_value(self.kappa_p)}")
+        print(f"kappa_ps:      {_fmt_value(self.kappa_ps)}")
+        print(f"predicted_rms: {_fmt_value(self.predicted_rms)}")
 
 
 def _cond3(M, xp):

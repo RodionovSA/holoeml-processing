@@ -7,7 +7,12 @@ packages stays one-directional: ``phase.solver`` imports from
 of from ``phase.solver`` avoids a circular import.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+
+
+def _fmt_value(value) -> str:
+    """Format a diagnostic value: 6 significant figures for floats, ``str`` otherwise."""
+    return f"{value:.6g}" if isinstance(value, float) else str(value)
 
 
 @dataclass
@@ -20,3 +25,13 @@ class MethodParam:
     condition numbers, ...). Stored on
     :attr:`phase.solver.PhaseResult.method_param`.
     """
+
+    def print_summary(self) -> None:
+        """Print this method's diagnostic fields, one per line.
+
+        Generic default, in dataclass declaration order -- a method
+        overrides this for a specific order or subset (e.g.
+        :meth:`phase.methods.aia.AIAParam.print_summary`).
+        """
+        for f in fields(self):
+            print(f"{f.name}: {_fmt_value(getattr(self, f.name))}")
