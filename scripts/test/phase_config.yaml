@@ -1,0 +1,15 @@
+# PhaseSolver configuration (see phase.solver.PhaseConfig)
+
+# Per-frame normalization
+use_alpha: true   # divide out alpha_n before solving
+use_g: true        # estimate g_n from the spatial carrier before solving
+g: null            # precomputed gain array; overrides use_g when set
+
+# Gain-estimation parameters (used only when use_g is true and g is null)
+dc_radius: 8
+halfwin: [3, 4]
+frame_chunk: 8
+
+# Method
+method: aia
+method_kwargs: {"iters": 30, "tol": 1.0e-4}

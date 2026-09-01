@@ -8,9 +8,10 @@ the per-frame model of ``docs/interference_model.md`` Eq. (8)::
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 import numpy as np
+import yaml
 
 from .backend import get_array_module, to_device
 from .utils import measure_frame_contrast
@@ -107,7 +108,7 @@ class PhaseResult:
         self.method_param.print_summary()
         print(f"reconstruction_error: {_fmt_value(self.reconstruction_error)}")
 
-@dataclass(frozen=True)
+@dataclass
 class PhaseConfig:
     """Configuration for :class:`PhaseSolver`, validated once at construction.
 
@@ -140,6 +141,9 @@ class PhaseConfig:
         Extra keyword arguments passed through to the selected method
         (e.g. ``{"iters": 50, "tol": 1e-5}`` for ``method="aia"``) -- see
         the chosen method's function for what it accepts.
+
+    See :meth:`to_yaml`/:meth:`from_yaml` to save/load a configuration as
+    a YAML file.
     """
 
     use_alpha: bool = True
@@ -154,6 +158,79 @@ class PhaseConfig:
     def __post_init__(self):
         if self.method.lower() not in METHODS:
             raise ValueError(f"unknown method {self.method!r}, expected one of {METHODS}")
+
+    def to_dict(self) -> Dict:
+        """Return this configuration as a plain, YAML-safe dict.
+
+        ``g`` is converted to a plain list (or ``None``) and ``halfwin`` to
+        a plain list, since YAML has no native array/tuple type; both are
+        reconstructed by :meth:`from_yaml`. ``method_kwargs``' values are
+        included as-is and must themselves be YAML-safe (numbers, strings,
+        lists, nested dicts of the same) for :meth:`to_yaml` to succeed on
+        the result -- e.g. a numpy array in there (such as a custom
+        ``delta0`` for ``"aia"``) is not supported and will raise from
+        PyYAML when dumped.
+
+        Returns
+        -------
+        dict
+            Keys match :class:`PhaseConfig`'s fields, in declaration order.
+        """
+        data = {
+            "use_alpha": self.use_alpha,
+            "use_g": self.use_g,
+            "g": self.g.tolist() if self.g is not None else None,
+            "dc_radius": self.dc_radius,
+            "halfwin": list(self.halfwin),
+            "frame_chunk": self.frame_chunk,
+            "method": self.method,
+            "method_kwargs": self.method_kwargs,
+        }
+        
+        return data
+    
+    def to_yaml(self, path) -> None:
+        """Save this configuration as a YAML file.
+
+        Converts to a plain dict via :meth:`to_dict` and writes it with
+        ``yaml.safe_dump`` (not ``yaml.dump``, which can serialize
+        arbitrary Python objects) -- this is a config file, plausibly
+        hand-edited or shared, so it stays restricted to plain data. Read
+        back with :meth:`from_yaml`.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            Destination file path.
+        """
+        data = self.to_dict()
+        with open(path, "w") as f:
+            yaml.safe_dump(data, f, sort_keys=False)
+
+    @classmethod
+    def from_yaml(cls, path) -> "PhaseConfig":
+        """Load a configuration previously written by :meth:`to_yaml`.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            Source file path.
+
+        Returns
+        -------
+        PhaseConfig
+            Reconstructed from the file; a key missing from the file falls
+            back to that field's normal default, an unrecognized key
+            raises ``TypeError``, and an invalid ``method`` raises
+            ``ValueError`` (same validation as constructing one directly).
+        """
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        if data.get("g") is not None:
+            data["g"] = np.asarray(data["g"], dtype=float)
+        if data.get("halfwin") is not None:
+            data["halfwin"] = tuple(data["halfwin"])
+        return cls(**data)
 
 
 class PhaseSolver:

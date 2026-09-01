@@ -80,6 +80,16 @@ Recovering $\phi(x, y)$ from a measured stack follows the same sequence of stage
 5. **Remove the carrier.** Estimate and subtract $\phi_{\text{carrier}}(x, y)$ from $\Phi(x, y)$, leaving $\phi(x, y) + \phi_{\text{inst}}(x, y)$.
 6. **Subtract a reference.** Repeat steps 1–5 on a reference acquisition (no sample) to get $\phi_{\text{inst}}(x, y)$, and subtract it to isolate $\phi(x, y)$.
 
-Steps 2–3 are assumed done before phase extraction from here on: once a stack is normalized and $g_n$ is known, $\alpha_n = 1$ and $g_n$ can be supplied rather than re-estimated. The rest of this document — and the extraction methods themselves — therefore work with the simplified per-frame model obtained by dropping $\alpha_n$ and $g_n$ from Eq. (8):
+Steps 2–3 are assumed done before phase extraction from here on: once a stack is normalized and $g_n$ is known, $\alpha_n = 1$ and $g_n$ can be supplied rather than re-estimated. Extraction-method documents (e.g. `docs/aia.md`) — and the extraction methods themselves — therefore work with the simplified per-frame model obtained by dropping $\alpha_n$ and $g_n$ from Eq. (8):
 
 $$I_n(x, y) = a(x, y) + b(x, y)\,\cos\big(\Phi(x, y) + \delta_n\big) \tag{9}$$
+
+Step 4 (extraction) is method-specific; see `docs/aia.md` for how AIA solves Eq. (9) for $a$, $b$, $\Phi$, and $\delta_n$.
+
+## Loss function
+
+Step 4 of the extraction pipeline — recovering $a$, $b$, $\Phi$, and $\{\delta_n\}$ from a measured stack $I_n^{\text{meas}}(x,y)$ — is posed, by every extraction method in this package, as minimizing the sum of squared residuals against Eq. (9):
+
+$$\mathcal{L}\big(a, b, \Phi, \{\delta_n\}\big) = \sum_{n=1}^{N} \sum_{x,y} \Big[I_n^{\text{meas}}(x,y) - a(x,y) - b(x,y)\cos\big(\Phi(x,y) + \delta_n\big)\Big]^2 \tag{10}$$
+
+$\mathcal{L}$ is nonlinear in $(\Phi, \delta_n)$ jointly, since they only enter through their sum inside a cosine — the same coupling noted under "At least three frames are needed" above. It becomes a *linear* least-squares problem the moment either block of unknowns is held fixed: fixing $\{\delta_n\}$ leaves a per-pixel linear fit for $(a,b,\Phi)$ — the classical closed-form phase-shifting formulas, valid when the steps are precisely known; fixing $(a,b,\Phi)$ leaves a per-frame linear fit for $\{\delta_n\}$'s quadrature components. Extraction methods differ in how they handle $\{\delta_n\}$ being unknown — e.g. by alternating between the two linear sub-problems; see `docs/aia.md` for how AIA does this, including a deliberate modification it makes to the per-frame sub-problem, and why.

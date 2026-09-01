@@ -1,10 +1,14 @@
-"""Per-frame carrier/DC-amplitude estimation, shared by every phase-recovery method.
+"""Per-frame diagnostics: gain/visibility estimation, and fit-quality checks.
 
-Holds :func:`_carrier_dc_amplitudes` and the two measurements built on it,
-:func:`measure_frame_contrast` and :func:`measure_frame_visibility`. Used by
-:meth:`phase.solver.PhaseSolver._estimate_gain` to resolve each frame's
-fringe gain ``g_n`` (Eq. (8) of ``docs/interference_model.md``) before
-dispatching to a phase-recovery method.
+Pre-solve: :func:`_carrier_dc_amplitudes` and the two measurements built on
+it, :func:`measure_frame_contrast` and :func:`measure_frame_visibility`,
+used by :meth:`phase.solver.PhaseSolver._estimate_gain` to resolve each
+frame's fringe gain ``g_n`` (Eq. (8) of ``docs/interference_model.md``)
+before dispatching to a phase-recovery method.
+
+Post-solve: :func:`frame_visibility_from_fit` and :func:`phase_step_coverage`,
+computed from an already-fitted :class:`phase.solver.PhaseResult`'s own
+``g, b, a, delta`` fields, for checking fit quality after the fact.
 """
 
 import warnings
@@ -182,3 +186,41 @@ def measure_frame_visibility(stack: np.ndarray, dc_radius: int = 8,
     amp, dc_amp = _carrier_dc_amplitudes(stack, dc_radius, halfwin, frame_chunk, dtype)
     dc_amp = xp.where(dc_amp > 0, dc_amp, xp.asarray(xp.finfo(xp.float64).eps))
     return 2.0 * amp / dc_amp
+
+def frame_visibility_from_fit(g: np.ndarray, b: np.ndarray, a: np.ndarray) -> np.ndarray:
+    """Per-frame fringe visibility from already-fitted model parameters.
+
+    Eq. (8) of ``docs/interference_model.md`` gives the per-frame visibility
+    as ``V_n = g_n * b/a`` (see its "Consequences" section); ``b/a`` varies
+    per pixel, so this reduces it to one number per frame via the median
+    over the field before scaling by ``g_n``.
+
+    Unlike :func:`measure_frame_visibility` (which measures visibility
+    directly from the raw stack via its spatial carrier, independent of any
+    solve), this is computed from a solver's already-recovered ``g, b, a``
+    -- e.g. :attr:`phase.solver.PhaseResult.g`/``.b``/``.a`` -- so it
+    reflects whatever those fields actually came out to be, including any
+    bias from an imperfect solve. Comparing the two is itself a diagnostic:
+    a large disagreement suggests the fit's ``g, b, a`` don't match what the
+    raw data's carrier actually shows.
+
+    Parameters
+    ----------
+    g : np.ndarray, shape (N,)
+        Per-frame fringe gain (e.g. ``PhaseResult.g``).
+    b : np.ndarray, shape (H, W)
+        Fringe amplitude map (e.g. ``PhaseResult.b``).
+    a : np.ndarray, shape (H, W)
+        Background intensity map (e.g. ``PhaseResult.a``).
+
+    Returns
+    -------
+    np.ndarray, shape (N,)
+        Per-frame visibility, ``g_n * median(b/a)``.
+    """
+    xp = get_array_module(g, b, a)
+    a_floor = xp.maximum(a, xp.asarray(xp.finfo(xp.float64).eps))
+    ratio = float(xp.median(b / a_floor))
+    return xp.asarray(g, dtype=xp.float64) * ratio
+
+
