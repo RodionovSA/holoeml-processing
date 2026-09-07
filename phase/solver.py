@@ -309,9 +309,15 @@ class PhaseSolver:
         # Eq. (8) evaluated at the fitted parameters, vs. the raw input --
         # a method-agnostic fit-quality check (works the same for any
         # method, since it only depends on the shared a/b/phi/delta/g/alpha
-        # contract, not on how they were produced).
+        # contract, not on how they were produced). The phase-step term
+        # goes through method_param.phase_step_field rather than a plain
+        # delta[:, newaxis, newaxis] broadcast, so a method whose recovered
+        # step varies spatially (e.g. a per-frame tilt) is reconstructed
+        # correctly too -- see MethodParam.phase_step_field.
+        H, W = phi.shape
+        delta_field = method_param.phase_step_field(delta, H, W, xp)          # (N, H, W)
         carrier = g[:, xp.newaxis, xp.newaxis] * b[xp.newaxis, :, :] \
-            * xp.cos(phi[xp.newaxis, :, :] + delta[:, xp.newaxis, xp.newaxis])
+            * xp.cos(phi[xp.newaxis, :, :] + delta_field)
         rec_stack = alpha[:, xp.newaxis, xp.newaxis] * (a[xp.newaxis, :, :] + carrier)
         rmse = float(xp.sqrt(xp.mean((stack - rec_stack) ** 2)))
 

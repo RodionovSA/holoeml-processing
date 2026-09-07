@@ -9,7 +9,12 @@ a function in its own module here and registering it below --
 
 from .base import MethodParam
 from .aia import aia
+from .step_field import aia_step_field
 
 METHOD_REGISTRY = {
     "aia": aia,
+    "aia_step_field": aia_step_field,
+    # Kept as an alias (degree defaults to 1, a pure linear tilt) so
+    # existing configs/notebooks written against the old name keep working.
+    "aia_tilt": aia_step_field,
 }

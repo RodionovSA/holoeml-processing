@@ -1,95 +1,100 @@
 # Interference model
 
-This document investigates a theoretical model for interference in a Mach–Zehnder imaging interferometer. The idea is to establish a relation between the measured intensity maps and the phase map of a sample. This model serves as a starting point for phase extraction algorithms.
+This document investigates a theoretical model for interference in Mach–Zehnder and Linnik imaging interferometers. The idea is to establish a relation between the measured intensity maps and the phase map of a sample. This model serves as a starting point for phase extraction algorithms.
 
 ## Starting equation
 
-In a Mach–Zehnder imaging interferometer, through measurements we acquire intensity maps $I(x, y, t)$ that have both spatial and temporal dependence. To acquire phase information we should establish a model that relates the two beam intensities and their phase difference. A very general form of this relation can be written as
+Both Mach–Zehnder and Linnik imaging interferometers are classical two beam interferometers. So, we can generally represent intensity maps $I(x, y, t)$ at the camera sensor as the coherent sum of two electric fields $E_1(x, y, z, t)$ and $E_2(x, y, z, t)$:
 
-$$I(x, y, t) = a(x, y, t) + b(x, y, t)\,\cos\big(\phi(x, y, t)\big) \tag{1}$$
+$$I(x, y, t) = I_1(x,y,t) + I_2(x,y,t) + 2\gamma(x, y, \Delta z, t)\sqrt{I_1(x,y,t)\,I_2(x,y,t)}\,\cos\big(\theta(x, y, \Delta z, t)\big)\cos\big(\phi(x, y, \Delta z, t)\big) \tag{1}$$
 
 where
 
-- $a(x, y, t)$ is a background intensity term (the two beam intensities plus background light),
-- $b(x, y, t)$ is a fringe contrast term (contains the beam intensities and the coherence envelope),
-- $\phi(x, y, t)$ is the phase difference between the two beams.
+- $I_1(x, y, t)$, $I_2(x, y, t)$ are the intensities of the two interfering beams at the sensor,
+- $\gamma(x, y, \Delta z, t)$ is the coherence envelope (degree of coherence) at path difference $\Delta z$,
+- $\theta(x, y, \Delta z, t)$ is the angle between the polarization vectors of the two fields,
+- $\phi(x, y, \Delta z, t)$ is the phase difference between the two beams.
 
-The fringe visibility is defined as $V(x, y, t) = b(x, y, t) / a(x, y, t)$. 
+Eq. (1) splits naturally into a term independent of the phase and a term modulated by it. Grouping them this way is common in interferometry, so we define
+
+$$a(x, y, t) = I_1(x,y,t) + I_2(x,y,t), \qquad b(x, y, t) = 2\gamma(x, y, \Delta z, t)\sqrt{I_1(x,y,t)\,I_2(x,y,t)}\,\cos\big(\theta(x, y, \Delta z, t)\big) \tag{2}$$
+
+which lets us rewrite Eq. (1) in the compact form
+
+$$I(x, y, t) = a(x, y, t) + b(x, y, t)\,\cos\big(\phi(x, y, \Delta z, t)\big) \tag{3}$$
+
+where
+
+- $a(x, y, t)$ is the background (DC) intensity: the sum of the two beam intensities,
+- $b(x, y, t)$ is the fringe amplitude (AC term), which carries the coherence envelope $\gamma$ and the polarization mismatch $\cos\theta$.
 
 ## Main assumptions
 
-Equation (1) contains one observable $I(x, y, t)$ and three unknown functions $a(x, y, t)$, $b(x, y, t)$, and $\phi(x, y, t)$. So, generally the problem of phase extraction from intensity maps cannot be solved without some assumptions. Let us introduce the main assumptions that are mild and physically justified.
+Eq. (3) is fully general and, as it stands, cannot be solved from measured intensity maps alone: it carries more unknown functions than a single acquisition can constrain. To make the problem tractable we introduce a series of assumptions that hold for our setup, each one removing an unknown from the model.
 
-1. We assume that our sample and reference are stable enough and do not move. That means we can split $\phi(x, y, t)$ into a static, sample-induced phase difference map $\phi(x, y)$ — the quantity of interest — and a time-dependent instrumental term:
-   $$\phi(x, y, t) = \phi(x, y) + \phi_{\text{inst}}(x, y, t) \tag{2}$$
-2. We assume that there are only small variations between the paths and angles of the two arms that affect only the phase term. This gives us two things. First, we can further expand the phase:
-   $$\phi(x, y, t) = \phi(x, y) + \phi_{\text{inst}}(x, y) + \delta(x, y, t) \tag{3}$$
-   Since $\phi(x, y)$ and $\phi_{\text{inst}}(x, y)$ are both static, they cannot be separated from a single acquisition; a reference measurement is needed to isolate $\phi(x, y)$. Second, this leads to the fact that transmission amplitudes are fixed for sample and reference and only intensities can vary, which leads to a common factor term $\alpha(t)$ shared by $a$ and $b$. This does not, however, account for all of the time dependence of $b$: the coherence envelope also depends on the optical path difference between the arms, which drifts and is deliberately stepped during acquisition, so $b$ carries an additional envelope factor $\gamma(x, y, t)$, normalised so that $\gamma = 1$ at the nominal path difference. Assuming stray/background light in $a(x, y, t)$ is negligible compared to the two beam intensities,
-   $$a(x, y, t) = \alpha(t)\,a(x, y) \quad b(x, y, t) = \alpha(t)\,\gamma(x, y, t)\,b(x, y) \tag{4}$$
-   The envelope $\gamma(x, y, t)$ varies on the scale of the coherence length $L_c$. Its static spatial structure can be absorbed into $b(x, y)$, and since the path-difference excursion over the acquisition — from phase stepping, drift, and vibration combined — is common to the whole field, the remaining time variation is approximately spatially uniform: $\gamma(x, y, t) \approx g(t)$. Only when that excursion stays much smaller than $L_c$ does $g(t) \approx 1$; vibration-induced breathing of the path difference makes $g(t)$ vary in time.
-3. Unlike the passive instrumental phase $\phi_{\text{inst}}(x, y)$, the geometric mismatch between the two wavefronts — tilt, defocus, and other low-order aberrations from the angle and curvature mismatch between the arms — is set deliberately and can differ from one acquisition to the next, so we separate out its contribution as a carrier term $\phi_{\text{carrier}}(x, y)$, a smooth, slowly varying function of $(x, y)$, with $\phi_{\text{inst}}(x, y)$ now understood to exclude it. We assume the carrier is constant within a single acquisition, so the only remaining time dependence is a spatially uniform piston $\delta(t)$, so:
-   $$\phi(x, y, t) = \phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t) \tag{5}$$
-   Between acquisitions the carrier may differ, since the tilt and curvature mismatch can be readjusted, so it is estimated and removed from each measurement before a reference acquisition is subtracted.
+1. **Linear polarization and non-chiral samples.** We assume the input beam is linearly polarized and that the samples under study are not chiral, i.e. they do not rotate the polarization plane. Neither arm of the interferometer then rotates the polarization state, so the two beams reaching the sensor stay co-polarized: $\theta(x, y, \Delta z, t) = 0$ and $\cos\theta = 1$. The polarization mismatch factor therefore drops out of $b$, leaving
+   $$b(x, y, t) = 2\gamma(x, y, \Delta z, t)\sqrt{I_1(x,y,t)\,I_2(x,y,t)} \tag{4}$$
+   $a(x, y, t)$ and the form of Eq. (3) are unaffected; only $b$ loses the polarization factor.
+
+2. **Stability and a common light source.** We assume the sample and the reference are stable and do not drift over an acquisition, so the sample-induced phase does not change in time and separates from a time-dependent instrumental term:
+   $$\phi(x, y, \Delta z, t) = \phi(x, y) + \phi_{\text{inst}}(x, y, t) \tag{5}$$
+   where $\phi(x, y)$ is the static, sample-induced phase difference — the quantity of interest — and $\phi_{\text{inst}}(x, y, t)$ is the time-dependent instrumental phase (carrying what was the $\Delta z$ dependence). We further assume both arms are fed by the same light source, so a fluctuation in source power scales both beams identically: the time dependence of each beam intensity separates from its spatial profile into one spatially uniform factor $\alpha(t)$,
+   $$I_k(x, y, t) = \alpha(t)\,I_k(x, y), \qquad k = 1, 2 \tag{6}$$
+   Since $\alpha(t)$ is common to both beams, it factors out of $a$ and $b$ entirely, leaving them static,
+   $$a(x, y) = I_1(x,y) + I_2(x,y), \qquad b(x, y) = 2\sqrt{I_1(x,y)\,I_2(x,y)} \tag{7}$$
+   and Eq. (3) becomes
+   $$I(x, y, t) = \alpha(t)\Big[a(x, y) + \gamma(x, y, \Delta z, t)\,b(x, y)\,\cos\big(\phi(x, y) + \phi_{\text{inst}}(x, y, t)\big)\Big] \tag{8}$$
+   $\gamma(x, y, \Delta z, t)$ still carries its own time dependence and stays outside $b$; it is not addressed by this assumption.
+
+3. **Instrumental phase: static aberration, carrier, and a spatially-uniform piston.** The instrumental phase separates into a part that is static over the acquisition and a time-dependent part introduced by the phase stepping. The static part further splits into a passive component $\phi_{\text{inst}}(x, y)$ (fixed path/aberration mismatch between the arms) and a deliberately-set carrier $\phi_{\text{carrier}}(x, y)$ — the tilt, defocus, and other low-order terms from the angle and curvature mismatch of the two wavefronts, smooth and slowly varying in $(x, y)$, set per acquisition and constant within it. The time-dependent part is the phase stepping. Assuming the stepping introduces a path difference common to the whole field — a spatially-uniform piston (justified when the stepping actuator produces an axial displacement, not a tilting one) — the only remaining time dependence is a scalar piston $\delta(t)$:
+   $$\phi_{\text{inst}}(x, y, t) = \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t) \tag{9}$$
+   Substituting into Eq. (5) gives the total phase
+   $$\phi(x, y, \Delta z, t) = \phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t) \tag{10}$$
+   and Eq. (8) becomes
+   $$I(x, y, t) = \alpha(t)\Big[a(x, y) + \gamma(x, y, \Delta z, t)\,b(x, y)\,\cos\big(\phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t)\big)\Big] \tag{11}$$
+   The uniform-piston form is exact only for a purely axial stepping motion; a parasitic tilt of the actuator would instead add a linear phase ramp across the field, sized by the beam footprint on the stepping mirror. This has been checked experimentally on our setup: any residual angular contribution is negligible, so $\delta(t)$ is treated as a spatially uniform scalar.
+
+4. **Random per-frame contrast factor.** Within an acquisition the coherence envelope $\gamma$ is effectively static — its variation over the sweep is negligible — so its static spatial structure absorbs into $b(x, y)$. Separately, mechanical vibration and index fluctuations during each frame's exposure reduce the fringe contrast by a spatially-uniform, temporally-random factor $g(t)$, with $\langle g \rangle$ set by the typical disturbance and frame-to-frame fluctuations that are non-periodic and vary between sessions. This factor multiplies only the modulation term:
+   $$\gamma(x, y, \Delta z, t) = \gamma(x, y)\,g(t) \tag{12}$$
+   Absorbing the static envelope $\gamma(x, y)$ into $b$ redefines the $b(x, y)$ of Eq. (7):
+   $$b(x, y) = 2\gamma(x, y)\sqrt{I_1(x,y)\,I_2(x,y)} \tag{13}$$
+   and Eq. (11) becomes
+   $$I(x, y, t) = \alpha(t)\Big[a(x, y) + g(t)\,b(x, y)\,\cos\big(\phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t)\big)\Big] \tag{14}$$
+   This follows from averaging the modulation term over the exposure: for a zero-mean, symmetric jitter $\varepsilon$ during the frame, $\langle\cos(\cdot + \varepsilon)\rangle = \langle\cos\varepsilon\rangle\cos(\cdot)$ — the sine term averages away — so the disturbance enters only as $g = \langle\cos\varepsilon\rangle \le 1$ on the modulation term and does not bias $\delta$ (an asymmetric $\varepsilon$ would also shift $\delta$). The assumption itself comes from experimental observation: the fringe amplitude is irregularly perturbed from frame to frame, like breathing, not periodic in time — sometimes present, sometimes not — with external vibration on the interferometer arms the likely source.
 
 ## Full model
 
-Substituting Eqs. (4) and (5) into Eq. (1) gives the full model:
+The phase terms $\phi(x, y)$, $\phi_{\text{inst}}(x, y)$, and $\phi_{\text{carrier}}(x, y)$ are all static and always appear together as a sum, so it is convenient to wrap them into a single total static phase
 
-$$I(x, y, t) = \alpha(t)\Big[a(x, y) + \gamma(x, y, t)\,b(x, y)\,\cos\big(\phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t)\big)\Big] \tag{6}$$
+$$\Phi(x, y) = \phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) \tag{15}$$
 
-The three static phase terms always appear together, so it is convenient to define the total static phase
+Substituting into Eq. (14) gives the full model
 
-$$\Phi(x, y) = \phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) \tag{7}$$
+$$I(x, y, t) = \alpha(t)\Big[a(x, y) + g(t)\,b(x, y)\,\cos\big(\Phi(x, y) + \delta(t)\big)\Big] \tag{16}$$
 
-In practice the model is used on a sequence of $N$ acquired frames. Using the reduction $\gamma(x, y, t) \approx g(t)$ from assumption 2, and writing $\alpha_n = \alpha(t_n)$, $g_n = g(t_n)$, $\delta_n = \delta(t_n)$ for frame $n$, Eq. (6) reduces to the working per-frame form
+In practice this model is applied to a sequence of $N$ acquired frames. Writing $\alpha_n = \alpha(t_n)$, $g_n = g(t_n)$, $\delta_n = \delta(t_n)$ for frame $n$, Eq. (16) becomes the per-frame form
 
-$$I_n(x, y) = \alpha_n\Big[a(x, y) + g_n\,b(x, y)\,\cos\big(\Phi(x, y) + \delta_n\big)\Big], \qquad n = 1 \dots N \tag{8}$$
+$$I_n(x, y) = \alpha_n\Big[a(x, y) + g_n\,b(x, y)\,\cos\big(\Phi(x, y) + \delta_n\big)\Big], \qquad n = 1 \dots N \tag{17}$$
 
 where
 
-- $\alpha(t)$ is the common source-power factor — spatially uniform, scaling $a$ and $b$ together,
-- $a(x, y)$ is the static background intensity,
-- $b(x, y)$ is the static fringe amplitude at the nominal path difference,
-- $\gamma(x, y, t)$ is the normalised coherence envelope,
-- $g_n$ is its per-frame reduction — the fringe-amplitude scaling from envelope breathing, e.g. due to vibration — sharing its origin with $\delta_n$ since both come from the same path-difference excursion,
-- $\phi(x, y)$ is the sample-induced phase — the quantity of interest,
-- $\phi_{\text{inst}}(x, y)$ is the static instrumental phase, carrier excluded, expected to repeat between acquisitions,
-- $\phi_{\text{carrier}}(x, y)$ is the smooth low-order wavefront mismatch, which may change between acquisitions,
-- $\delta(t)$ is the spatially uniform piston phase shift.
+- $\alpha(t)$ is the spatially uniform source-power factor, common to $a$ and $b$,
+- $a(x, y)$ is the static background (DC) intensity, $I_1(x,y) + I_2(x,y)$,
+- $b(x, y)$ is the static fringe amplitude, $2\gamma(x,y)\sqrt{I_1(x,y)\,I_2(x,y)}$, including the static coherence envelope,
+- $g(t)$ is the spatially uniform, temporally random per-frame contrast factor from vibration and index fluctuations during the exposure; it multiplies only the modulation term,
+- $\Phi(x, y)$ is the total static phase, Eq. (15), comprising:
+  - $\phi(x, y)$ — the sample-induced phase, the quantity of interest,
+  - $\phi_{\text{inst}}(x, y)$ — the passive static instrumental phase (fixed path/aberration mismatch between the arms),
+  - $\phi_{\text{carrier}}(x, y)$ — the deliberately-set carrier: a smooth, low-order tilt/defocus term from the wavefront mismatch, fixed within an acquisition but which may change between acquisitions,
+- $\delta(t)$ is the spatially uniform piston phase shift from the phase stepping.
 
-### Consequences
+Expanding the cosine in Eq. (17), $\cos(\Phi + \delta_n) = \cos\Phi\cos\delta_n - \sin\Phi\sin\delta_n$, and collecting the static factors gives a second, equivalent form of Eq. (17) that is linear in the per-pixel unknowns. Defining the quadrature components
 
-**Only $\Phi$ is observable — hence reference measurements.** The three static terms enter Eq. (7) identically and none varies with $t$, so no amount of phase stepping can separate them: a single acquisition yields $\Phi$, not $\phi$. A reference acquisition without the sample gives $\Phi_{\text{ref}} = \phi_{\text{inst}} + \phi_{\text{carrier}}^{\text{ref}}$, so $\phi = \Phi - \Phi_{\text{ref}}$. This works only if $\phi_{\text{inst}}$ repeats between the two acquisitions; the carrier need not, which is why it is estimated and removed separately first (assumption 3).
+$$u(x, y) = b(x, y)\cos\Phi(x, y), \qquad v(x, y) = -b(x, y)\sin\Phi(x, y) \tag{18}$$
 
-**At least three frames are needed.** After normalising out $\alpha_n$, each pixel in Eq. (8) carries three unknowns — $a$, $b$, $\Phi$ — and each frame supplies one equation, so recovering them requires $N \ge 3$ frames with distinct $\delta_n$. If the steps $\delta_n$ are themselves unknown, they become additional unknowns, requiring more frames and an iterative solver. $g_n$ is a further per-frame unknown: closed-form formulas that assume fixed fringe amplitude become biased when $g_n$ varies, but since $\alpha_n$ and $g_n$ are only two scalars per frame shared by every pixel, they can be estimated jointly with the pixel unknowns from the same frame sequence.
+Eq. (17) becomes
 
-**Global offset ambiguity.** $\Phi$ and $\delta_n$ enter Eq. (8) only through the sum $\Phi + \delta_n$, so adding a constant $c$ to every $\delta_n$ while subtracting $c$ from $\Phi$ reproduces the same data exactly. A convention such as $\delta_1 = 0$ fixes the split, but the recovered $\Phi$ — and hence $\phi$ — still carries an unknown global constant, which is harmless for relative phase maps but must be resolved separately for an absolute optical path difference.
+$$I_n(x, y) = \alpha_n\Big[a(x, y) + g_n\big(u(x, y)\cos\delta_n + v(x, y)\sin\delta_n\big)\Big], \qquad n = 1 \dots N \tag{19}$$
 
-**Wrapping and sign.** $\cos$ is an even, $2\pi$-periodic function, so $\Phi$ is recovered only modulo $2\pi$ and must be unwrapped, and $\cos(\Phi) = \cos(-\Phi)$ leaves an overall sign undetermined from a single frame. With $N \ge 3$ frames the sine component of $\Phi$ is also recovered, fixing the sign — provided the ordering and sign of the steps $\delta_n$ are known; if they are not, $\Phi \to -\Phi$ remains unresolvable.
+Eq. (19) is linear in $(a, u, v)$ for fixed $\delta_n$, which is why extraction methods work in this quadrature form rather than the polar one. The polar quantities are recovered from $\Phi = \operatorname{atan2}(-v, u)$ and $b = \sqrt{u^2 + v^2}$.
 
-**$\alpha$ and $\gamma$ affect the data differently.** $\alpha_n$ is common to $a$ and $b$, so normalising each frame by its mean or a reference removes $\alpha_n$ entirely. $g_n$ scales only the cosine term, so this same normalisation does not remove it: the per-frame visibility is $V_n = g_n\,b/a$, which is precisely why a visibility measurement is a direct probe of the coherence envelope, and why residual envelope breathing biases the recovered fringe amplitude unless $g_n$ is estimated separately.
-
-## Extraction pipeline
-
-Recovering $\phi(x, y)$ from a measured stack follows the same sequence of stages regardless of which method performs the extraction:
-
-1. **Acquire $N$ frames.** Collect a phase-shifted stack $I_n(x, y)$, $n = 1 \dots N$, per Eq. (8).
-2. **Normalize.** Estimate and divide out the per-frame factor $\alpha_n$ from each frame, leaving $\alpha_n \approx 1$.
-3. **Estimate $g_n$.** Measure the per-frame fringe gain from the normalized stack.
-4. **Extract $a$, $b$, $\Phi$, $\delta_n$.** Solve the normalized, gain-corrected stack for the static background, fringe amplitude, total static phase, and per-frame steps.
-5. **Remove the carrier.** Estimate and subtract $\phi_{\text{carrier}}(x, y)$ from $\Phi(x, y)$, leaving $\phi(x, y) + \phi_{\text{inst}}(x, y)$.
-6. **Subtract a reference.** Repeat steps 1–5 on a reference acquisition (no sample) to get $\phi_{\text{inst}}(x, y)$, and subtract it to isolate $\phi(x, y)$.
-
-Steps 2–3 are assumed done before phase extraction from here on: once a stack is normalized and $g_n$ is known, $\alpha_n = 1$ and $g_n$ can be supplied rather than re-estimated. Extraction-method documents (e.g. `docs/aia.md`) — and the extraction methods themselves — therefore work with the simplified per-frame model obtained by dropping $\alpha_n$ and $g_n$ from Eq. (8):
-
-$$I_n(x, y) = a(x, y) + b(x, y)\,\cos\big(\Phi(x, y) + \delta_n\big) \tag{9}$$
-
-Step 4 (extraction) is method-specific; see `docs/aia.md` for how AIA solves Eq. (9) for $a$, $b$, $\Phi$, and $\delta_n$.
-
-## Loss function
-
-Step 4 of the extraction pipeline — recovering $a$, $b$, $\Phi$, and $\{\delta_n\}$ from a measured stack $I_n^{\text{meas}}(x,y)$ — is posed, by every extraction method in this package, as minimizing the sum of squared residuals against Eq. (9):
-
-$$\mathcal{L}\big(a, b, \Phi, \{\delta_n\}\big) = \sum_{n=1}^{N} \sum_{x,y} \Big[I_n^{\text{meas}}(x,y) - a(x,y) - b(x,y)\cos\big(\Phi(x,y) + \delta_n\big)\Big]^2 \tag{10}$$
-
-$\mathcal{L}$ is nonlinear in $(\Phi, \delta_n)$ jointly, since they only enter through their sum inside a cosine — the same coupling noted under "At least three frames are needed" above. It becomes a *linear* least-squares problem the moment either block of unknowns is held fixed: fixing $\{\delta_n\}$ leaves a per-pixel linear fit for $(a,b,\Phi)$ — the classical closed-form phase-shifting formulas, valid when the steps are precisely known; fixing $(a,b,\Phi)$ leaves a per-frame linear fit for $\{\delta_n\}$'s quadrature components. Extraction methods differ in how they handle $\{\delta_n\}$ being unknown — e.g. by alternating between the two linear sub-problems; see `docs/aia.md` for how AIA does this, including a deliberate modification it makes to the per-frame sub-problem, and why.

@@ -35,3 +35,31 @@ class MethodParam:
         """
         for f in fields(self):
             print(f"{f.name}: {_fmt_value(getattr(self, f.name))}")
+
+    def phase_step_field(self, delta, H, W, xp):
+        """Full per-pixel, per-frame phase-step field for reconstructing Eq. (8).
+
+        Default: ``delta`` is spatially uniform (the piston model), so this
+        just broadcasts it to ``(N, H, W)``. A method whose recovered phase
+        step varies spatially (e.g. a per-frame tilt) overrides this --
+        :meth:`phase.solver.PhaseSolver.fit`'s method-agnostic
+        reconstruction-error check calls this instead of assuming ``delta``
+        broadcasts directly, so a new method needs only override this to be
+        handled there (see
+        :class:`phase.methods.step_field.StepFieldParam`).
+
+        Parameters
+        ----------
+        delta : np.ndarray, shape (N,)
+            Per-frame phase step, as returned alongside this ``MethodParam``.
+        H, W : int
+            Frame height and width.
+        xp : module
+            ``numpy`` or ``cupy``, matching ``delta``'s array module.
+
+        Returns
+        -------
+        np.ndarray, shape (N, H, W)
+        """
+        N = delta.shape[0]
+        return xp.broadcast_to(delta[:, None, None], (N, H, W))

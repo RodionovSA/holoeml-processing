@@ -17,9 +17,12 @@ known. Phase unwrapping and related tooling are planned as the project grows.
     call `PhaseSolver(config).fit(stack)` to recover phase.
   - `methods/` — one module per phase-recovery algorithm, registered in
     `methods/__init__.py`'s `METHOD_REGISTRY` (`phase.solver.METHODS` is
-    derived from it). Currently: `aia.py` — an Advanced Iterative Algorithm
+    derived from it). `aia.py` — an Advanced Iterative Algorithm
     implementation for blind phase-shift extraction (Wang & Han 2004;
     enhanced per Chen & Kemao, *Optics Express* 27(26), 37634-37651, 2019).
+    `step_field.py` — `aia_step_field`, refining that solve against an
+    arbitrary-degree spatially-varying phase-step error (`degree=1` is a
+    pure linear tilt, registered separately as `"aia_tilt"`).
   - `utils.py` — `measure_frame_contrast`/`measure_frame_visibility`,
     per-frame fringe-gain estimation shared by every method.
   - `carrier.py` — `remove_carrier`, estimating/removing a spatial
@@ -34,6 +37,9 @@ known. Phase unwrapping and related tooling are planned as the project grows.
     above (see GPU section below).
 - `docs/interference_model.md` — the interferometry model (Eq. 8) every
   module in `phase/` is written against.
+- `docs/frame_moments.md`, `docs/step_field_residuals.md` — derivations of how
+  non-ideal phase steps and per-frame contrast leak into frame statistics and
+  into the AIA solve, respectively; the latter backs `methods/step_field.py`.
 - `main.py` — entry-point stub.
 - `tests/` — unit tests (synthetic data; run in seconds).
 - `scripts/test/` — notebook-based checks against real acquisitions.

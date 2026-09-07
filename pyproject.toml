@@ -13,6 +13,7 @@ dependencies = [
     "jupyter>=1.1.1",
     "matplotlib>=3.11.1",
     "numpy>=2.5.1",
+    "torch>=2.12", 
     "opencv-python>=5.0.0.93",
     "pyyaml>=6.0.3",
 ]

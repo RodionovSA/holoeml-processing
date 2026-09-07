@@ -2,7 +2,7 @@
 
 import warnings
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -76,6 +76,16 @@ def _cond3(M, xp):
     return float(s.max()) / smin
 
 
+def _pixel_design(delta: np.ndarray, g: np.ndarray, xp) -> np.ndarray:
+    """Assemble the ``(N, 3)`` pixel-step design matrix ``[1, g*cos(delta), g*sin(delta)]``.
+
+    Shared by :func:`aia_pixel_step` (to solve for ``a, u, v``) and :func:`aia`
+    (to recompute the same matrix for the ``kappa_p`` / residual diagnostics)
+    so the two never drift apart.
+    """
+    return xp.column_stack([xp.ones_like(delta), g * xp.cos(delta), g * xp.sin(delta)])
+
+
 def _chunked_sigma(I, A, X, xp, chunk: int = 1_000_000):
     """RMS of ``I - A @ X`` without ever materializing the full residual.
 
@@ -96,6 +106,211 @@ def _chunked_sigma(I, A, X, xp, chunk: int = 1_000_000):
         resid = I[:, s:s + chunk] - A_work @ X[:, s:s + chunk]
         ssq += float(xp.sum(resid.astype(xp.float64) ** 2))
     return float(np.sqrt(ssq / (N * P)))
+
+def _aia_diagnostics(I, delta_fit, g, a, u, v, N, xp, iters_run: int, converged: bool) -> AIAParam:
+    """Assemble :class:`AIAParam` from a solved ``(a, u, v)`` and the piston
+    ``delta`` it was fit against.
+
+    Factored out of :func:`aia` so :func:`phase.methods.step_field.aia_step_field`
+    can recompute the same ``kappa_p``/``kappa_ps``/``predicted_rms``
+    diagnostics for its own final, tilt-refined solution, using the exact
+    formula ``aia`` itself uses -- see :class:`AIAParam` for what each field
+    means and :func:`aia`'s Algorithm/Notes sections for the derivations.
+
+    Parameters
+    ----------
+    I : np.ndarray, shape (N, P)
+        Flattened interferogram stack.
+    delta_fit : np.ndarray, shape (N,)
+        Piston phase steps that ``(a, u, v)`` were actually fit against.
+    g : np.ndarray, shape (N,)
+        Per-frame fringe contrast.
+    a, u, v : np.ndarray, shape (P,)
+        Background and quadrature components.
+    N : int
+        Number of frames.
+    xp : module
+        ``numpy`` or ``cupy``, matching the other arguments.
+    iters_run : int
+        Value to report as :attr:`AIAParam.iters_run`.
+    converged : bool
+        Value to report as :attr:`AIAParam.converged`.
+
+    Returns
+    -------
+    AIAParam
+    """
+    P = I.shape[1]
+
+    # diagnostics (Chen & Kemao 2019): condition numbers of the two
+    # normal matrices, and the accuracy they predict.
+    A = _pixel_design(delta_fit, g, xp)
+    kappa_p = _cond3(A.T @ A, xp)
+
+    # kappa_ps: paper's *normalized* A_ps (Eq. 12), built from unit-circle
+    # directions cos(phi), sin(phi) with amplitude b divided out. This is
+    # deliberately different from the actual (amplitude-weighted) frame-step
+    # solve matrix B.T@B -- normalizing is what makes the >=2 bound and the
+    # "large is bad" threshold below meaningful; the amplitude-weighted
+    # version is skewed by fringe-visibility variation, not just phase
+    # coverage (see AIAParam.kappa_ps docstring). Assembled here from five
+    # scalar reductions rather than materializing a (P,3) design matrix
+    # ``C`` just to form ``C.T @ C`` -- same 3x3 Gram matrix, at a small
+    # fraction of the peak memory for a large acquisition.
+    u64, v64 = u.astype(xp.float64), v.astype(xp.float64)
+    r = xp.maximum(xp.sqrt(u64**2 + v64**2), xp.finfo(xp.float64).eps)
+    cphi, sphi = u64 / r, -v64 / r
+    Scp, Ssp = float(cphi.sum()), float(sphi.sum())
+    Scc, Sss = float((cphi * cphi).sum()), float((sphi * sphi).sum())
+    Scs = float((cphi * sphi).sum())
+    CtC = xp.asarray([[float(P), Scp, Ssp], [Scp, Scc, Scs], [Ssp, Scs, Sss]])
+    kappa_ps = _cond3(CtC, xp)
+
+    sigma = _chunked_sigma(I, A, xp.vstack([a, u, v]), xp)
+    b = xp.sqrt(u64**2 + v64**2)
+    b_amp = max(float(xp.median(b)), np.finfo(float).eps)
+    predicted_rms = 0.42 * (np.sqrt(kappa_p) + 2) * (sigma / b_amp) / np.sqrt(N)
+
+    if kappa_p > 20:
+        warnings.warn(
+            f"aia: poorly conditioned phase-shift distribution "
+            f"(kappa_p={kappa_p:.1f}); accuracy is unreliable. Consider "
+            f"more evenly-spaced phase shifts and/or more frames.",
+            stacklevel=2,
+        )
+    if kappa_ps > 20:
+        warnings.warn(
+            f"aia: poor phase coverage (kappa_ps={kappa_ps:.1f}); the "
+            f"field spans too little phase (roughly less than one fringe) "
+            f"for the frame step to reliably separate delta_n from noise, "
+            f"even though the iteration converged. Consider adding phase "
+            f"diversity (e.g. tilt/carrier fringes) or using calibrated "
+            f"phase steps instead of blind estimation.",
+            stacklevel=2,
+        )
+
+    return AIAParam(
+        kappa_p=kappa_p, kappa_ps=kappa_ps, predicted_rms=predicted_rms,
+        iters_run=iters_run, converged=converged,
+    )
+
+
+def aia_pixel_step(stack: np.ndarray, delta: np.ndarray, g: Optional[np.ndarray] = None,
+                    dtype=None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-pixel least-squares solve for the background and quadrature fields.
+
+    With the per-frame phase steps ``delta_n`` (and contrasts ``g_n``) held
+    fixed, each pixel's ``N`` samples follow::
+
+        I_n = a + g_n * (u*cos(delta_n) + v*sin(delta_n))
+
+    which is linear in ``(a, u, v)``, so every pixel is solved independently
+    by one shared pseudoinverse of the ``(N, 3)`` design matrix. Here
+    ``u = b*cos(phi)``, ``v = -b*sin(phi)`` for fringe amplitude ``b`` and
+    phase ``phi``; recovering ``phi`` requires this to be paired with an
+    estimate of ``delta_n`` from elsewhere (e.g. :func:`aia_frame_step`).
+
+    Parameters
+    ----------
+    stack : np.ndarray, shape (N, P)
+        Interferogram frames flattened to ``P`` pixels each.
+    delta : np.ndarray, shape (N,)
+        Phase step of each frame, in radians.
+    g : np.ndarray, shape (N,), optional
+        Per-frame fringe contrast. Defaults to all ones (no frame-to-frame
+        contrast variation).
+    dtype : numpy/cupy dtype, optional
+        Working dtype for the returned ``(P,)`` fields. Defaults to
+        ``stack``'s array module's :func:`phase.backend.default_dtype`. The
+        design matrix and pseudoinverse are always computed in float64
+        regardless of this setting.
+
+    Returns
+    -------
+    a, u, v : np.ndarray, shape (P,)
+        Background and quadrature components, in ``dtype``.
+    """
+    if len(stack.shape) != 2:
+        raise ValueError(f"Stack shape must be have 2 dims, but got {len(stack.shape)}")
+    if len(delta.shape) != 1:
+        raise ValueError(f"Delta shape must be have 1 dim, but got {len(delta.shape)}")
+    if stack.shape[0] != len(delta):
+        raise ValueError("First dimensions of stack and delta must be equal")
+    if g is not None and len(g) != len(delta):
+        raise ValueError("g must have the same length as delta")
+
+    xp = get_array_module(stack)
+    N = stack.shape[0]
+    work_dtype = dtype if dtype is not None else _backend.default_dtype(xp)
+    delta = xp.asarray(delta, dtype=xp.float64)
+    g = xp.ones(N, dtype=xp.float64) if g is None else xp.asarray(g, dtype=xp.float64)
+
+    A = _pixel_design(delta, g, xp)                                 # (N,3) float64
+    X = xp.linalg.pinv(A).astype(work_dtype) @ stack                # (3,P)
+    return X[0], X[1], X[2]
+
+
+def aia_frame_step(stack: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Per-frame least-squares solve for each frame's phase step.
+
+    With the quadrature fields ``(u, v)`` held fixed, each frame's ``P``
+    pixels follow ``I_n ~ alpha_n + P_n*u + Q_n*v`` for a free per-frame
+    offset ``alpha_n`` and coefficients ``(P_n, Q_n) = g_n*(cos(delta_n),
+    sin(delta_n))``, from which ``delta_n = atan2(Q_n, P_n)``. This is the
+    transpose of :func:`aia_pixel_step`'s solve: a linear regression across
+    pixels instead of across frames.
+
+    ``alpha_n`` is left free rather than fixed to (or subtracted as) the
+    background field ``a`` from the pixel step: it absorbs the background
+    and any frame-to-frame brightness drift, and is re-derived from the raw
+    data on every call rather than carrying forward a mid-iteration estimate
+    of ``a`` -- feeding that estimate's own error back into this fit was
+    found empirically to be less robust.
+
+    The returned phase steps are absolute: this function does not resolve
+    the model's phase-origin ambiguity (a constant that can be added to
+    every ``delta_n``), so a caller comparing or iterating on ``delta``
+    should pin it to a reference (e.g. ``delta[0] = 0``) itself.
+
+    Parameters
+    ----------
+    stack : np.ndarray, shape (N, P)
+        Interferogram frames flattened to ``P`` pixels each.
+    u, v : np.ndarray, shape (P,)
+        Quadrature components, e.g. as returned by :func:`aia_pixel_step`.
+
+    Returns
+    -------
+    delta : np.ndarray, shape (N,), float64
+        Estimated phase step of each frame, in radians.
+    """
+    if len(stack.shape) != 2:
+        raise ValueError(f"Stack shape must be have 2 dims, but got {len(stack.shape)}")
+    if len(u.shape) != 1 or len(v.shape) != 1:
+        raise ValueError("u and v must each have 1 dim")
+    if len(u) != stack.shape[1] or len(v) != stack.shape[1]:
+        raise ValueError("u and v must have the same length as stack's second dimension")
+
+    xp = get_array_module(stack, u, v)
+    P = stack.shape[1]
+    u64 = xp.asarray(u, dtype=xp.float64)
+    v64 = xp.asarray(v, dtype=xp.float64)
+
+    # Five scalar reductions build the (3,3) Gram matrix without ever
+    # materializing a (P,3) design matrix -- the same pattern used for
+    # kappa_ps in aia().
+    Su, Sv = float(xp.sum(u64)), float(xp.sum(v64))
+    Suu = float(xp.sum(u64 * u64))
+    Svv = float(xp.sum(v64 * v64))
+    Suv = float(xp.sum(u64 * v64))
+    BtB = xp.asarray([[float(P), Su, Sv], [Su, Suu, Suv], [Sv, Suv, Svv]])
+
+    IB = xp.stack([xp.sum(stack, axis=1).astype(xp.float64),
+                    (stack @ u64).astype(xp.float64),
+                    (stack @ v64).astype(xp.float64)], axis=1)      # (N,3)
+
+    x = xp.linalg.solve(BtB, IB.T)                                  # (3,N)
+    return xp.arctan2(x[2], x[1])
 
 
 def aia(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray] = None,
@@ -127,20 +342,12 @@ def aia(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray] = None,
     per-frame phase-step update falls below ``tol`` (or ``iters`` is
     reached):
 
-    1. **Pixel step** -- with ``delta_n`` fixed, solve a per-pixel linear
-       regression across the ``N`` frames for the background ``a`` and
-       quadrature components ``u, v``. The normal matrix of this solve is
-       ``A_p`` (Chen & Kemao's notation).
-    2. **Frame step** -- with ``(a, u, v)`` fixed, solve a per-frame
-       linear regression across the ``P = H*W`` pixels for each frame's
-       phase step ``delta_n``. A free per-frame offset is kept in this
-       fit to absorb the background ``a`` and any frame-to-frame
-       brightness drift, since it is re-derived from the raw data each
-       iteration rather than subtracted explicitly -- subtracting the
-       (still-imperfect, mid-iteration) ``a`` estimate was tried and
-       found empirically to be less robust, letting its error feed back
-       into the fit and increase, rather than reduce, leakage into ``a``.
-       The normal matrix of this solve is ``A_ps``.
+    1. **Pixel step** (:func:`aia_pixel_step`) -- with ``delta_n`` fixed,
+       recover the background ``a`` and quadrature components ``u, v``. The
+       normal matrix of this solve is ``A_p`` (Chen & Kemao's notation).
+    2. **Frame step** (:func:`aia_frame_step`) -- with ``(a, u, v)`` fixed,
+       recover each frame's phase step ``delta_n``. The normal matrix of
+       this solve is ``A_ps``.
 
     Phase steps are re-referenced to frame 0 (``delta[0] = 0``) every
     iteration, since the model has a phase-origin ambiguity that would
@@ -225,38 +432,20 @@ def aia(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray] = None,
     N, H, W = stack.shape
     work_dtype = dtype if dtype is not None else _backend.default_dtype(xp)
     I = stack.reshape(N, -1).astype(work_dtype, copy=False)        # (N, P)
-    P = I.shape[1]
 
     if delta0 is None:
         delta0 = xp.arange(N) * 2 * xp.pi / N
     delta = xp.asarray(delta0, dtype=xp.float64).copy()
     g = xp.asarray(g, dtype=xp.float64)
 
-    # (P,3) working buffer for the frame-step design matrix, allocated once
-    # and overwritten in place each iteration (u, v change; the constant
-    # column doesn't) rather than rebuilt via column_stack every pass.
-    UV = xp.empty((P, 3), dtype=work_dtype, order="F")
-    UV[:, 0] = 1
-
     u = v = a = None
-    A = None
+    delta_fit = delta
     converged = False
     it = 0
     for it in range(iters):
-        # pixel step: I_n = a + g_n*(u cosδ_n + v sinδ_n),  u=b cosφ, v=-b sinφ
-        c, s = xp.cos(delta), xp.sin(delta)
-        A = xp.column_stack([xp.ones(N), g * c, g * s])                # (N,3) float64
-        X = xp.linalg.pinv(A).astype(work_dtype) @ I                   # (3,P)
-        a, u, v = X[0], X[1], X[2]
-
-        # frame step: fit [alpha_n, Pn, Qn] against the fixed u,v patterns
-        UV[:, 1] = u
-        UV[:, 2] = v
-        BtB = (UV.T @ UV).astype(xp.float64)                          # (3,3)
-        IB = (I @ UV).astype(xp.float64)                              # (N,3)
-        x = xp.linalg.solve(BtB, IB.T)                                # (3,N)
-        Pn, Qn = x[1], x[2]
-        new_delta = xp.arctan2(Qn, Pn)
+        delta_fit = delta
+        a, u, v = aia_pixel_step(I, delta_fit, g, dtype=work_dtype)
+        new_delta = aia_frame_step(I, u, v)
 
         new_delta = new_delta - new_delta[0]                          # pin phase origin
         step = float(xp.abs(wrap(new_delta - delta)).max())
@@ -270,52 +459,7 @@ def aia(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray] = None,
     b   = xp.sqrt(u64**2 + v64**2).reshape(H, W)
     a_map = a.reshape(H, W)
 
-    # diagnostics (Chen & Kemao 2019): condition numbers of the two
-    # normal matrices, and the accuracy they predict.
-    kappa_p = _cond3(A.T @ A, xp)
-
-    # kappa_ps: paper's *normalized* A_ps (Eq. 12), built from unit-circle
-    # directions cos(phi), sin(phi) with amplitude b divided out. This is
-    # deliberately different from the actual (amplitude-weighted) frame-step
-    # solve matrix B.T@B -- normalizing is what makes the >=2 bound and the
-    # "large is bad" threshold below meaningful; the amplitude-weighted
-    # version is skewed by fringe-visibility variation, not just phase
-    # coverage (see AIAParam.kappa_ps docstring). Assembled here from five
-    # scalar reductions rather than materializing a (P,3) design matrix
-    # ``C`` just to form ``C.T @ C`` -- same 3x3 Gram matrix, at a small
-    # fraction of the peak memory for a large acquisition.
-    r = xp.maximum(xp.sqrt(u64**2 + v64**2), xp.finfo(xp.float64).eps)
-    cphi, sphi = u64 / r, -v64 / r
-    Scp, Ssp = float(cphi.sum()), float(sphi.sum())
-    Scc, Sss = float((cphi * cphi).sum()), float((sphi * sphi).sum())
-    Scs = float((cphi * sphi).sum())
-    CtC = xp.asarray([[float(P), Scp, Ssp], [Scp, Scc, Scs], [Ssp, Scs, Sss]])
-    kappa_ps = _cond3(CtC, xp)
-
-    sigma = _chunked_sigma(I, A, xp.vstack([a, u, v]), xp)
-    b_amp = max(float(xp.median(b)), np.finfo(float).eps)
-    predicted_rms = 0.42 * (np.sqrt(kappa_p) + 2) * (sigma / b_amp) / np.sqrt(N)
-
-    if kappa_p > 20:
-        warnings.warn(
-            f"aia: poorly conditioned phase-shift distribution "
-            f"(kappa_p={kappa_p:.1f}); accuracy is unreliable. Consider "
-            f"more evenly-spaced phase shifts and/or more frames.",
-            stacklevel=2,
-        )
-    if kappa_ps > 20:
-        warnings.warn(
-            f"aia: poor phase coverage (kappa_ps={kappa_ps:.1f}); the "
-            f"field spans too little phase (roughly less than one fringe) "
-            f"for the frame step to reliably separate delta_n from noise, "
-            f"even though the iteration converged. Consider adding phase "
-            f"diversity (e.g. tilt/carrier fringes) or using calibrated "
-            f"phase steps instead of blind estimation.",
-            stacklevel=2,
-        )
-
-    method_param = AIAParam(
-        kappa_p=kappa_p, kappa_ps=kappa_ps, predicted_rms=predicted_rms,
-        iters_run=it + 1, converged=converged,
-    )
+    # Rebuilt from delta_fit (the phase steps (a, u, v) were actually fit
+    # against), not the updated delta from the final frame step.
+    method_param = _aia_diagnostics(I, delta_fit, g, a, u, v, N, xp, it + 1, converged)
     return a_map, b, phi, delta, method_param
