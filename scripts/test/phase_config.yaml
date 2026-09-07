@@ -2,13 +2,10 @@
 
 # Per-frame normalization
 use_alpha: false   # divide out alpha_n before solving
-use_g: false        # estimate g_n from the spatial carrier before solving
-g: null            # precomputed gain array; overrides use_g when set
 
-# Gain-estimation parameters (used only when use_g is true and g is null)
-dc_radius: 8
-halfwin: [3, 4]
-frame_chunk: 8
+# Gain
+gain_mode: joint   # fit g_n jointly inside the method's own iteration ("none" fixes g_n=1)
+g: null            # precomputed gain array; overrides gain_mode when set
 
 # Method
 method: aia_step_field

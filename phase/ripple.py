@@ -55,7 +55,7 @@ def estimate_phase_ripple(phi: np.ndarray, mask: np.ndarray,
     deterministic function of the recovered phase itself, ``eps(phi)``,
     rather than of position -- the signature of an imperfect frame model
     (e.g. per-frame contrast treated as constant when it isn't; see
-    :class:`phase.solver.PhaseConfig`'s ``use_g`` and
+    :class:`phase.solver.PhaseConfig`'s ``gain_mode`` and
     :func:`phase.utils.measure_frame_contrast`). Because it tracks phase,
     not position, it doesn't average out spatially
     and isn't separable from real structure by a spatial filter (e.g. FFT)

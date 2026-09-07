@@ -17,7 +17,7 @@ import numpy as np
 
 from .. import backend as _backend
 from ..backend import get_array_module
-from .aia import AIAParam, _aia_diagnostics, aia, aia_frame_step, aia_pixel_step
+from .aia import AIAParam, _aia_diagnostics, _whiten_uv, aia, aia_frame_step, aia_pixel_step
 from .base import MethodParam, _fmt_value
 
 
@@ -407,7 +407,8 @@ class StepFieldParam(MethodParam):
         return field.reshape(N, H, W)
 
 
-def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray] = None,
+def aia_step_field(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
+                    delta0: Optional[np.ndarray] = None,
                     iters: int = 30, tol: float = 1e-4, dtype=None,
                     degree: int = 1, refine_iters: int = 5, refine_tol: float = 1e-3,
                     crop: int = 100):
@@ -443,6 +444,12 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray
         Phase-shifted interferogram frames -- see :func:`phase.methods.aia.aia`.
     g : np.ndarray, shape (N,)
         Per-frame fringe contrast -- see :func:`phase.methods.aia.aia`.
+    fit_gain : bool, default False
+        If True, recover ``g`` jointly rather than holding it fixed --
+        forwarded to the initial :func:`phase.methods.aia.aia` call, and
+        kept fitted (re-estimated each refinement round from the current
+        ``(u, v)``) throughout the step-field refinement below. See
+        :func:`phase.methods.aia.aia` for what this changes.
     delta0, iters, tol, dtype
         Passed through to the initial :func:`phase.methods.aia.aia` call;
         see that function for their meaning.
@@ -474,7 +481,7 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray
 
     Returns
     -------
-    a, b, phi, delta, method_param
+    a, b, phi, delta, g, method_param
         Same contract as :func:`phase.methods.aia.aia`; ``method_param`` is
         a :class:`StepFieldParam`.
     """
@@ -487,10 +494,15 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray
     I = stack.reshape(N, -1).astype(work_dtype, copy=False)        # (N, P)
     g = xp.asarray(g, dtype=xp.float64)
 
-    a_map, b0, phi0, delta, aia_param0 = aia(stack, g, delta0=delta0, iters=iters, tol=tol, dtype=dtype)
+    a_map, b0, phi0, delta, g, aia_param0 = aia(stack, g, fit_gain=fit_gain,
+                                                 delta0=delta0, iters=iters, tol=tol, dtype=dtype)
     a = a_map.reshape(-1)
     u = (b0 * xp.cos(phi0)).reshape(-1)
     v = (-b0 * xp.sin(phi0)).reshape(-1)
+    # aia()'s own c_fit (all zero when fit_gain=False) -- the per-frame
+    # offset (a, u, v) above were actually fit against, so the step-field
+    # regression below must be evaluated on the same DC-corrected data.
+    c = aia_param0.c_fit
 
     basis = _poly_basis(H, W, degree, xp)                            # (J, P)
     J = basis.shape[0]
@@ -500,7 +512,7 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray
     rms_history: List[float] = []
     prev_rms = None
     refine_converged = False
-    best = None            # (a, u, v, delta, coeffs, kappa_fit, rms_frac) of the best round
+    best = None            # (a, u, v, delta, g, c, coeffs, kappa_fit, rms_frac) of the best round
     best_iter = -1
     it = -1
 
@@ -511,16 +523,21 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray
     # whose batched svd/solve calls aren't meant to handle a 0-column Gram
     # matrix (no singular values to reduce over).
     for it in range(refine_iters if J > 0 else 0):
-        coeffs_it, cond = fit_step_field(I, a, u, v, delta, basis, g=g)
+        # I minus the current per-frame offset c -- fit_step_field's own
+        # model (Eq. E1) has no c_n term, so it must see the same
+        # DC-corrected data the pixel step (a, u, v) was actually fit
+        # against, exactly as aia()'s own pixel step does under fit_gain.
+        Ic = I - c.astype(work_dtype)[:, None] if fit_gain else I
+        coeffs_it, cond = fit_step_field(Ic, a, u, v, delta, basis, g=g)
         kappa_it = float(xp.max(cond))
-        rms_frac_it, _ = step_field_quality(I, a, u, v, delta, coeffs_it, basis, H, W, g=g, crop=crop)
+        rms_frac_it, _ = step_field_quality(Ic, a, u, v, delta, coeffs_it, basis, H, W, g=g, crop=crop)
         rms_history.append(rms_frac_it)
 
-        # (a, u, v, delta) here are the values *before* this round's
+        # (a, u, v, delta, g, c) here are the values *before* this round's
         # correction -- the state coeffs_it/rms_frac_it were actually fit
         # and scored against, so the snapshot is self-consistent.
         if best is None or rms_frac_it < best[-1]:
-            best = (a, u, v, delta, coeffs_it, kappa_it, rms_frac_it)
+            best = (a, u, v, delta, g, c, coeffs_it, kappa_it, rms_frac_it)
             best_iter = it
 
         # Only a genuine (non-negative) improvement below refine_tol counts
@@ -547,22 +564,29 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray
         # pixel/frame step on the result. fit_step_field's own normal
         # equations (Eq. E1) fit resid ~= -w*Delta, so removing that
         # contribution means adding w*Delta back, not subtracting it.
-        c, s = xp.cos(delta), xp.sin(delta)
-        w = g[:, None] * (xp.outer(s, u) - xp.outer(c, v))
+        cd, sd = xp.cos(delta), xp.sin(delta)
+        w = g[:, None] * (xp.outer(sd, u) - xp.outer(cd, v))
         Delta_field = coeffs_fixed.T @ basis                          # (N, P)
-        corrected = I + w * Delta_field
+        corrected = I + w * Delta_field                               # raw, for the frame step
+        corrected_Ic = corrected - c.astype(work_dtype)[:, None] if fit_gain else corrected
 
-        a, u, v = aia_pixel_step(corrected, delta, g, dtype=work_dtype)
-        new_delta = aia_frame_step(corrected, u, v)
+        a, u, v = aia_pixel_step(corrected_Ic, delta, g, dtype=work_dtype)
+        if fit_gain:
+            u, v = _whiten_uv(u, v, xp)          # see aia.py's _whiten_uv docstring
+        new_delta, new_g, new_c = aia_frame_step(corrected, u, v)
         delta = new_delta - new_delta[0]
+        if fit_gain:
+            c = new_c - xp.mean(new_c)                                # gauge fix
+            g = new_g / max(float(xp.median(new_g)), np.finfo(float).eps)
 
     refine_iters_run = it + 1
 
     if best is not None:
-        a, u, v, delta, coeffs, kappa_fit, rms_frac = best
+        a, u, v, delta, g, c, coeffs, kappa_fit, rms_frac = best
 
     aia_param = _aia_diagnostics(I, delta, g, a, u, v, N, xp,
-                                  aia_param0.iters_run, aia_param0.converged)
+                                  aia_param0.iters_run, aia_param0.converged,
+                                  c=(c if fit_gain else None))
     coeffs_rms = xp.sqrt(xp.mean(coeffs ** 2, axis=1))
     method_param = StepFieldParam(
         aia_param=aia_param, degree=degree, coeffs=coeffs, coeffs_rms=coeffs_rms,
@@ -575,4 +599,4 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, delta0: Optional[np.ndarray
     u64, v64 = u.astype(xp.float64), v.astype(xp.float64)
     b = xp.sqrt(u64 ** 2 + v64 ** 2).reshape(H, W)
     a_map = a.reshape(H, W)
-    return a_map, b, phi, delta, method_param
+    return a_map, b, phi, delta, g, method_param

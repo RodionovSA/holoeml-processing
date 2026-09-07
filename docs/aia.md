@@ -171,6 +171,82 @@ the median fringe amplitude. A poorly conditioned acquisition ($\kappa_p$ or
 $\kappa_{ps}$ large) should not be trusted even if the iteration reports
 convergence.
 
+## Jointly estimating gain (`fit_gain`)
+
+The "Note on $g_n$" above assumes $g_n$ is known in advance, e.g. from
+`phase.utils.measure_frame_contrast`, which locates a linear spatial
+carrier in each frame's 2-D FFT. That assumption fails outright on
+circular (or otherwise carrier-free) fringes — there is no carrier peak to
+locate — and more generally couples gain accuracy to a spatial-frequency
+assumption that has nothing to do with the phase-shifting model itself.
+`aia(..., fit_gain=True)` instead recovers $g_n$ from the same alternating
+solve, at no extra asymptotic cost.
+
+The frame step (Eq. 6–8) already computes $(P_n, Q_n)$ with
+$P_n \approx g_n\cos\delta_n$, $Q_n \approx g_n\sin\delta_n$, and discards
+their magnitude after extracting $\delta_n$ (Eq. 8). `fit_gain` keeps it:
+
+$$g_n = \sqrt{P_n^2 + Q_n^2}, \qquad g_n \leftarrow g_n / \operatorname{median}(g_n) \tag{11}$$
+
+and feeds it back into the next pixel step's design matrix $A$ (Eq. 5).
+It also keeps the frame step's per-frame offset $\alpha_n$ (Eq. 6, renamed
+$c_n$ in code to avoid clashing with `interference_model.md`'s $\alpha_n$),
+gauge-fixed by $c_n \leftarrow c_n - \overline{c_n}$, and subtracts it from
+the stack *before* the next pixel step:
+
+$$A\,[a\;\, u\;\, v]^\top = I - c \tag{12}$$
+
+Both this and Eq. (11) are needed together: without Eq. (12), the pixel
+and frame steps are minimizing different objectives ($\mathcal{L}$ with a
+fixed per-pixel $a$, vs. $\mathcal{L}'_n$ with a free per-frame $c_n$ that
+$\mathcal{L}$ does not have), so there is no guarantee the joint residual
+decreases every iteration. With it, both steps are exact least-squares
+minimizers of the one joint objective
+$\sum_{n,x,y}\big[I_n - a - c_n - g_n(u\cos\delta_n+v\sin\delta_n)\big]^2$,
+so that residual decreases monotonically every iteration (a stall is then
+a genuine local optimum, not the two steps chasing different targets) —
+this is unrelated to, and does not fix, the identifiability issue below.
+
+### A gauge freedom that only appears once $g_n$ is free
+
+With $g_n \equiv 1$, $(P_n, Q_n) = (\cos\delta_n, \sin\delta_n)$ is
+constrained to the unit circle — a single degree of freedom per frame.
+Once $g_n$ is free, $(P_n, Q_n)$ is an *unconstrained* point in the plane,
+and Eq. (3)/(12)'s model is invariant under **any** invertible linear
+reparametrization
+
+$$(u, v) \to (u, v)\,M, \qquad (P, Q) \to (P, Q)\,M^{-\top} \tag{13}$$
+
+for a $2\times 2$ matrix $M$, since $\{1, u, v\}$ and $\{1, u M, v M\}$
+span the same subspace for any invertible $M$, not just a rotation. Left
+alone, the alternating solve can converge to *any* basis of that
+subspace — fitting $I$ exactly as well (often better, since a generic
+basis has more freedom to explain noise) — without $(P_n, Q_n)$ tracing
+$(g_n\cos\delta_n, g_n\sin\delta_n)$ for any physically meaningful
+$\delta_n$. Verified on synthetic data: without correcting this, a fit
+that *halves* the residual relative to the correctly-identified
+(fixed-$g$) solution can still land tens of degrees off in recovered
+phase, despite the iteration reporting `converged`.
+
+The fix (`phase.methods.aia._whiten_uv`, run on $(u, v)$ after every
+pixel step, only when `fit_gain` is True) rescales/shears $(u, v)$ so that
+
+$$\sum_{x,y} u^2 = \sum_{x,y} v^2, \qquad \sum_{x,y} uv = 0 \tag{14}$$
+
+which collapses the residual gauge from all of $GL(2,\mathbb{R})$ down to
+just rotations and reflections, $O(2)$ — exactly the ambiguity plain
+($g \equiv 1$) AIA already has and already resolves (phase origin via
+$\delta_1 = 0$; sign via the documented
+$(\Phi, \delta) \to (-\Phi, -\delta)$ branch), rather than that plus a
+two-parameter shear/scale family on top. Total pixel-sum energy (the
+trace of $(u,v)$'s $2\times 2$ Gram matrix) is preserved, so only Eq.
+(11)'s own normalization changes $g$'s overall scale. This whitening step
+does not change the achievable value of the joint objective either: it
+reparametrizes the same 3-D column space $\{1, u, v\}$, and the very next
+frame step is an unconstrained regression against whichever basis it is
+handed, so it always reaches a cost at least as low as before whitening —
+the monotone-descent property above holds with this step included.
+
 ## References
 
 Z. Wang and B. Han, "Advanced iterative algorithm for phase extraction of

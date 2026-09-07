@@ -78,13 +78,21 @@ print(solver.method_param_)              # diagnostics specific to the method us
 
 `PhaseConfig` selects and configures the algorithm (`method="aia"` by
 default; see `phase.solver.METHODS` for what's registered) and controls the
-shared normalization/gain-estimation steps (`use_alpha`, `use_g`, `g`);
+shared normalization/gain steps (`use_alpha`, `gain_mode`, `g`) —
+`gain_mode="joint"` (the default) fits each frame's fringe contrast jointly
+with its phase step inside the method's own iteration, making no
+assumption about the fringe pattern's spatial frequency (unlike the older
+FFT-based `phase.utils.measure_frame_contrast`, which needs a linear
+spatial carrier and fails on circular or otherwise carrier-free fringes);
+`gain_mode="none"` fixes every frame's gain at 1, and passing `g` directly
+uses it as a fixed value regardless of `gain_mode`.
 `solver.method_param_` carries whatever diagnostics that method reports —
 for `"aia"`, an `AIAParam` with `kappa_p`/`kappa_ps` (condition-number
 diagnostics from Chen & Kemao 2019: large values flag a poorly conditioned
 acquisition whose result shouldn't be trusted, even if `converged` is
 `True`), `predicted_rms` (the paper's predicted phase error in radians),
-`iters_run`, and `converged`. See `phase/solver.py` and
+`iters_run`, `converged`, and (when `gain_mode="joint"`) `g_fit`/`c_fit`/
+`g_min_ratio` describing the joint-gain fit. See `phase/solver.py` and
 `phase/methods/aia.py` for full parameter/field documentation.
 
 ## GPU (CuPy)

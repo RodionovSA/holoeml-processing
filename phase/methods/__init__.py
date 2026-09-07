@@ -1,10 +1,14 @@
 """Registry of phase-recovery method implementations for :class:`phase.solver.PhaseSolver`.
 
 Each entry maps a method name to a callable
-``(stack, g, dtype=None, **method_kwargs) -> (a, b, phi, delta, method_param)``,
-matching Eq. (8) of ``docs/interference_model.md``. Add a method by writing such
-a function in its own module here and registering it below --
-:data:`phase.solver.METHODS` is derived from this dict's keys, nothing else changes.
+``(stack, g, fit_gain=False, dtype=None, **method_kwargs) -> (a, b, phi, delta, g, method_param)``,
+matching Eq. (8) of ``docs/interference_model.md``. The returned ``g`` is the
+input ``g`` passed through unchanged when ``fit_gain=False``, or the
+per-frame contrast jointly recovered alongside ``delta`` (normalized to
+``median(g) = 1``) when ``fit_gain=True`` -- see :func:`phase.methods.aia.aia`
+for the reference implementation. Add a method by writing such a function in
+its own module here and registering it below -- :data:`phase.solver.METHODS`
+is derived from this dict's keys, nothing else changes.
 """
 
 from .base import MethodParam

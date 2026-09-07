@@ -54,7 +54,7 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
     not average out within one run, only across independent runs -- unlike
     per-frame model errors (contrast, phase-step), which are systematic
     within a run and need a better model rather than averaging (see
-    :class:`phase.solver.PhaseConfig`'s ``use_g`` and
+    :class:`phase.solver.PhaseConfig`'s ``gain_mode`` and
     :func:`phase.utils.measure_frame_contrast`). Verified on repeated
     bare-glass acquisitions: this random component was ~1.15 degrees per
     acquisition and averaging brought a null-test difference down following

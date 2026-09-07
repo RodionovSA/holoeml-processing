@@ -33,8 +33,7 @@ where
 Eq. (3) is fully general and, as it stands, cannot be solved from measured intensity maps alone: it carries more unknown functions than a single acquisition can constrain. To make the problem tractable we introduce a series of assumptions that hold for our setup, each one removing an unknown from the model.
 
 1. **Linear polarization and non-chiral samples.** We assume the input beam is linearly polarized and that the samples under study are not chiral, i.e. they do not rotate the polarization plane. Neither arm of the interferometer then rotates the polarization state, so the two beams reaching the sensor stay co-polarized: $\theta(x, y, \Delta z, t) = 0$ and $\cos\theta = 1$. The polarization mismatch factor therefore drops out of $b$, leaving
-   $$b(x, y, t) = 2\gamma(x, y, \Delta z, t)\sqrt{I_1(x,y,t)\,I_2(x,y,t)} \tag{4}$$
-   $a(x, y, t)$ and the form of Eq. (3) are unaffected; only $b$ loses the polarization factor.
+   $$b(x, y, t) = 2\gamma(x, y, \Delta z, t)\sqrt{I_1(x,y,t)\,I_2(x,y,t)}. \tag{4}$$
 
 2. **Stability and a common light source.** We assume the sample and the reference are stable and do not drift over an acquisition, so the sample-induced phase does not change in time and separates from a time-dependent instrumental term:
    $$\phi(x, y, \Delta z, t) = \phi(x, y) + \phi_{\text{inst}}(x, y, t) \tag{5}$$
@@ -46,13 +45,13 @@ Eq. (3) is fully general and, as it stands, cannot be solved from measured inten
    $$I(x, y, t) = \alpha(t)\Big[a(x, y) + \gamma(x, y, \Delta z, t)\,b(x, y)\,\cos\big(\phi(x, y) + \phi_{\text{inst}}(x, y, t)\big)\Big] \tag{8}$$
    $\gamma(x, y, \Delta z, t)$ still carries its own time dependence and stays outside $b$; it is not addressed by this assumption.
 
-3. **Instrumental phase: static aberration, carrier, and a spatially-uniform piston.** The instrumental phase separates into a part that is static over the acquisition and a time-dependent part introduced by the phase stepping. The static part further splits into a passive component $\phi_{\text{inst}}(x, y)$ (fixed path/aberration mismatch between the arms) and a deliberately-set carrier $\phi_{\text{carrier}}(x, y)$ — the tilt, defocus, and other low-order terms from the angle and curvature mismatch of the two wavefronts, smooth and slowly varying in $(x, y)$, set per acquisition and constant within it. The time-dependent part is the phase stepping. Assuming the stepping introduces a path difference common to the whole field — a spatially-uniform piston (justified when the stepping actuator produces an axial displacement, not a tilting one) — the only remaining time dependence is a scalar piston $\delta(t)$:
+3. **Instrumental phase: static aberration, carrier, and a piston, to leading order.** The instrumental phase separates into a part that is static over the acquisition and a time-dependent part introduced by the phase stepping. The static part further splits into a passive component $\phi_{\text{inst}}(x, y)$ (fixed path/aberration mismatch between the arms) and a deliberately-set carrier $\phi_{\text{carrier}}(x, y)$ — the tilt, defocus, and other low-order terms from the angle and curvature mismatch of the two wavefronts, smooth and slowly varying in $(x, y)$, set per acquisition and constant within it. The time-dependent part is the phase stepping. Assuming, to leading order, that the stepping introduces a path difference common to the whole field — a spatially-uniform piston, exact for a purely axial actuator motion — the dominant remaining time dependence is a scalar piston $\delta(t)$:
    $$\phi_{\text{inst}}(x, y, t) = \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t) \tag{9}$$
    Substituting into Eq. (5) gives the total phase
    $$\phi(x, y, \Delta z, t) = \phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t) \tag{10}$$
    and Eq. (8) becomes
    $$I(x, y, t) = \alpha(t)\Big[a(x, y) + \gamma(x, y, \Delta z, t)\,b(x, y)\,\cos\big(\phi(x, y) + \phi_{\text{inst}}(x, y) + \phi_{\text{carrier}}(x, y) + \delta(t)\big)\Big] \tag{11}$$
-   The uniform-piston form is exact only for a purely axial stepping motion; a parasitic tilt of the actuator would instead add a linear phase ramp across the field, sized by the beam footprint on the stepping mirror. This has been checked experimentally on our setup: any residual angular contribution is negligible, so $\delta(t)$ is treated as a spatially uniform scalar.
+   A parasitic tilt of the stepping actuator would instead add a linear phase ramp across the field, and a curvature mismatch would add a quadratic term, both scaling with each frame's step size. Frame-to-frame measurements on our setup do show such a residual spatial structure — tilt and, more weakly, curvature — on top of the uniform piston, at a level too large to treat as negligible. Its physical origin is not yet established: a parasitic tilt of the stepping actuator and external vibration of the interferometer arms are both candidates, and the two have not been distinguished. Assumption 3 keeps only the spatially-uniform piston $\delta(t)$ as the leading-order term of the phase step; the residual spatial variation is a known, currently uncharacterized departure from it, not represented in the equations that follow.
 
 4. **Random per-frame contrast factor.** Within an acquisition the coherence envelope $\gamma$ is effectively static — its variation over the sweep is negligible — so its static spatial structure absorbs into $b(x, y)$. Separately, mechanical vibration and index fluctuations during each frame's exposure reduce the fringe contrast by a spatially-uniform, temporally-random factor $g(t)$, with $\langle g \rangle$ set by the typical disturbance and frame-to-frame fluctuations that are non-periodic and vary between sessions. This factor multiplies only the modulation term:
    $$\gamma(x, y, \Delta z, t) = \gamma(x, y)\,g(t) \tag{12}$$
@@ -86,7 +85,7 @@ where
   - $\phi(x, y)$ — the sample-induced phase, the quantity of interest,
   - $\phi_{\text{inst}}(x, y)$ — the passive static instrumental phase (fixed path/aberration mismatch between the arms),
   - $\phi_{\text{carrier}}(x, y)$ — the deliberately-set carrier: a smooth, low-order tilt/defocus term from the wavefront mismatch, fixed within an acquisition but which may change between acquisitions,
-- $\delta(t)$ is the spatially uniform piston phase shift from the phase stepping.
+- $\delta(t)$ is the spatially uniform piston phase shift from the phase stepping — the leading-order term (Assumption 3); it does not capture the residual frame-to-frame spatial variation noted there.
 
 Expanding the cosine in Eq. (17), $\cos(\Phi + \delta_n) = \cos\Phi\cos\delta_n - \sin\Phi\sin\delta_n$, and collecting the static factors gives a second, equivalent form of Eq. (17) that is linear in the per-pixel unknowns. Defining the quadrature components
 

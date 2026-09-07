@@ -8,17 +8,17 @@ the per-frame model of ``docs/interference_model.md`` Eq. (8)::
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Dict
+from typing import Optional, Dict
 
 import numpy as np
 import yaml
 
 from .backend import get_array_module, to_device
-from .utils import measure_frame_contrast
 from .methods import METHOD_REGISTRY, MethodParam
 from .methods.base import _fmt_value
 
 METHODS = list(METHOD_REGISTRY)
+GAIN_MODES = ("none", "joint")
 
 
 @dataclass
@@ -118,21 +118,20 @@ class PhaseConfig:
         If True, estimate and divide out the per-frame factor ``alpha_n``
         (:meth:`PhaseSolver._normalize`) before solving. If False, skip
         normalization and fix ``alpha_n = 1`` for every frame.
-    use_g : bool, default True
-        If True and ``g`` is not given, estimate the per-frame fringe gain
-        ``g_n`` from the spatial carrier (:meth:`PhaseSolver._estimate_gain`)
-        before solving. If False, fix ``g_n = 1`` for every frame. Ignored
-        when ``g`` is given.
+    gain_mode : {"none", "joint"}, default "joint"
+        How to resolve the per-frame fringe gain ``g_n`` when ``g`` is not
+        given. ``"joint"`` fits it jointly with the phase step inside the
+        chosen method's own iteration (``fit_gain=True``, e.g.
+        :func:`phase.methods.aia.aia`) -- this makes no assumption about the
+        fringe pattern's spatial frequency, so it works on circular or
+        otherwise carrier-free fringes where the older FFT-based estimate
+        (:func:`phase.utils.measure_frame_contrast`) does not. ``"none"``
+        fixes ``g_n = 1`` for every frame. Ignored when ``g`` is given.
     g : np.ndarray, shape (N,), optional
         Precomputed per-frame fringe gain, e.g. from a calibration shot, or
         from calling :func:`phase.utils.measure_frame_contrast` yourself and
         reusing the result across several fits. When given, this is used
-        directly and neither estimated nor defaulted to ones, regardless of
-        ``use_g``.
-    dc_radius, halfwin, frame_chunk
-        Passed through to :func:`phase.utils.measure_frame_contrast` when
-        gain is being estimated (``use_g`` is True and ``g`` is not given);
-        see that function for their meaning. Unused otherwise.
+        directly as the fixed gain and ``gain_mode`` is ignored.
     method : str, default "aia"
         Which registered algorithm to dispatch to -- must be one of
         :data:`METHODS` (case-insensitive), checked here at construction
@@ -147,29 +146,29 @@ class PhaseConfig:
     """
 
     use_alpha: bool = True
-    use_g: bool = True
+    gain_mode: str = "joint"
     g: Optional[np.ndarray] = None
-    dc_radius: int = 8
-    halfwin: Tuple[int, int] = (3, 4)
-    frame_chunk: int = 8
     method: str = "aia"
     method_kwargs: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.method.lower() not in METHODS:
             raise ValueError(f"unknown method {self.method!r}, expected one of {METHODS}")
+        if self.gain_mode not in GAIN_MODES:
+            raise ValueError(
+                f"unknown gain_mode {self.gain_mode!r}, expected one of {GAIN_MODES}"
+            )
 
     def to_dict(self) -> Dict:
         """Return this configuration as a plain, YAML-safe dict.
 
-        ``g`` is converted to a plain list (or ``None``) and ``halfwin`` to
-        a plain list, since YAML has no native array/tuple type; both are
-        reconstructed by :meth:`from_yaml`. ``method_kwargs``' values are
-        included as-is and must themselves be YAML-safe (numbers, strings,
-        lists, nested dicts of the same) for :meth:`to_yaml` to succeed on
-        the result -- e.g. a numpy array in there (such as a custom
-        ``delta0`` for ``"aia"``) is not supported and will raise from
-        PyYAML when dumped.
+        ``g`` is converted to a plain list (or ``None``), since YAML has no
+        native array type; reconstructed by :meth:`from_yaml`.
+        ``method_kwargs``' values are included as-is and must themselves be
+        YAML-safe (numbers, strings, lists, nested dicts of the same) for
+        :meth:`to_yaml` to succeed on the result -- e.g. a numpy array in
+        there (such as a custom ``delta0`` for ``"aia"``) is not supported
+        and will raise from PyYAML when dumped.
 
         Returns
         -------
@@ -178,15 +177,12 @@ class PhaseConfig:
         """
         data = {
             "use_alpha": self.use_alpha,
-            "use_g": self.use_g,
+            "gain_mode": self.gain_mode,
             "g": self.g.tolist() if self.g is not None else None,
-            "dc_radius": self.dc_radius,
-            "halfwin": list(self.halfwin),
-            "frame_chunk": self.frame_chunk,
             "method": self.method,
             "method_kwargs": self.method_kwargs,
         }
-        
+
         return data
     
     def to_yaml(self, path) -> None:
@@ -221,15 +217,33 @@ class PhaseConfig:
         PhaseConfig
             Reconstructed from the file; a key missing from the file falls
             back to that field's normal default, an unrecognized key
-            raises ``TypeError``, and an invalid ``method`` raises
-            ``ValueError`` (same validation as constructing one directly).
+            raises ``TypeError``, and an invalid ``method`` or ``gain_mode``
+            raises ``ValueError`` (same validation as constructing one
+            directly).
+
+        Raises
+        ------
+        ValueError
+            If the file contains ``use_g``, ``dc_radius``, ``halfwin``, or
+            ``frame_chunk`` -- the FFT-based gain estimator these configured
+            (:func:`phase.utils.measure_frame_contrast`) has been replaced
+            by the ``gain_mode`` field (``"joint"`` fits gain inside the
+            method's own iteration instead), so a config written for the
+            old estimator would otherwise silently change meaning rather
+            than fail loudly.
         """
         with open(path) as f:
             data = yaml.safe_load(f) or {}
+        removed = {"use_g", "dc_radius", "halfwin", "frame_chunk"} & data.keys()
+        if removed:
+            raise ValueError(
+                f"{path!r} uses removed PhaseConfig field(s) {sorted(removed)} "
+                f"from the old FFT-based gain estimator -- replace them with "
+                f"gain_mode='joint' (fit gain jointly, the new default) or "
+                f"gain_mode='none' (fix g=1)."
+            )
         if data.get("g") is not None:
             data["g"] = np.asarray(data["g"], dtype=float)
-        if data.get("halfwin") is not None:
-            data["halfwin"] = tuple(data["halfwin"])
         return cls(**data)
 
 
@@ -238,11 +252,13 @@ class PhaseSolver:
 
     Wraps the pipeline described in ``docs/interference_model.md`` --
     :meth:`fit` normalizes the input stack (:meth:`_normalize`, gated by
-    ``config.use_alpha``), estimates each frame's fringe gain
-    (:meth:`_estimate_gain`, gated by ``config.use_g``), then hands off to
-    the algorithm named by ``config.method`` (see :data:`METHODS` for the
-    recognized names, and :data:`phase.methods.METHOD_REGISTRY` for their
-    implementations) to recover ``phi, a, b, delta``. Results are read back
+    ``config.use_alpha``), then hands off to the algorithm named by
+    ``config.method`` (see :data:`METHODS` for the recognized names, and
+    :data:`phase.methods.METHOD_REGISTRY` for their implementations) to
+    recover ``phi, a, b, delta`` -- and, when ``config.gain_mode ==
+    "joint"`` (the default) and no explicit ``config.g`` is given, ``g``
+    jointly with them, inside that method's own iteration. Results are read
+    back
     from the fitted ``PhaseSolver`` via the ``phi_``, ``a_``, ``b_``,
     ``delta_``, ``g_``, ``alpha_``, ``method_param_``, ``reconstruction_error_``
     properties -- see :class:`PhaseResult` for their definitions.
@@ -297,14 +313,11 @@ class PhaseSolver:
 
         if self.config.g is not None:
             g = xp.asarray(self.config.g, dtype=xp.float64)
-        elif self.config.use_g:
-            g = self._estimate_gain(normalized_stack,
-                                    self.config.dc_radius,
-                                    self.config.halfwin,
-                                    self.config.frame_chunk)
+            fit_gain = False
         else:
             g = xp.ones_like(alpha)
-        a, b, phi, delta, method_param = self._solve(normalized_stack, g)
+            fit_gain = self.config.gain_mode == "joint"
+        a, b, phi, delta, g, method_param = self._solve(normalized_stack, g, fit_gain)
 
         # Eq. (8) evaluated at the fitted parameters, vs. the raw input --
         # a method-agnostic fit-quality check (works the same for any
@@ -324,22 +337,25 @@ class PhaseSolver:
         self.result_ = PhaseResult(phi, a, b, delta, g, alpha, method_param, rmse)
         return self
     
-    def _solve(self, stack: np.ndarray, g: np.ndarray):
+    def _solve(self, stack: np.ndarray, g: np.ndarray, fit_gain: bool):
         """Dispatch to the configured method and recover its Eq. (8) fields.
 
         Looks up ``config.method`` in :data:`phase.methods.METHOD_REGISTRY`
         (already validated to exist by :class:`PhaseConfig`) and calls it
-        with the normalized ``stack``, resolved ``g``, this solver's
-        ``dtype``, and ``config.method_kwargs``.
+        with the normalized ``stack``, initial ``g``, ``fit_gain``
+        (``config.gain_mode == "joint"`` and no explicit ``config.g``, see
+        :meth:`fit`), this solver's ``dtype``, and ``config.method_kwargs``.
 
         Returns
         -------
-        a, b, phi, delta, method_param
+        a, b, phi, delta, g, method_param
             See the chosen method's function for details (e.g.
-            :func:`phase.methods.aia.aia` for ``method="aia"``).
+            :func:`phase.methods.aia.aia` for ``method="aia"``); ``g`` is
+            the input ``g`` unchanged when ``fit_gain=False``, or the
+            jointly fitted gain otherwise.
         """
         solve_fn = METHOD_REGISTRY[self.config.method.lower()]
-        return solve_fn(stack, g, dtype=self.dtype, **self.config.method_kwargs)
+        return solve_fn(stack, g, fit_gain=fit_gain, dtype=self.dtype, **self.config.method_kwargs)
 
     def _check_fitted(self):
         if self.result_ is None:
@@ -378,26 +394,6 @@ class PhaseSolver:
             raise ValueError("every frame must have a positive mean intensity")
         alpha = m / xp.median(m)
         return stack / alpha[:, None, None], alpha
-
-    def _estimate_gain(self, stack: np.ndarray, dc_radius: int = 8,
-                        halfwin: tuple = (3, 4), frame_chunk: int = 8) -> np.ndarray:
-        """Measure each frame's fringe gain ``g_n`` from its spatial carrier.
-
-        Parameters
-        ----------
-        stack : np.ndarray, shape (N, H, W)
-            Interferogram stack, already moved to the target device/dtype
-            by :meth:`fit`.
-        dc_radius, halfwin, frame_chunk
-            See :func:`phase.utils.measure_frame_contrast`.
-
-        Returns
-        -------
-        np.ndarray, shape (N,)
-            Per-frame fringe gain, normalized so ``median(g) = 1``.
-        """
-        return measure_frame_contrast(stack, dc_radius, halfwin, frame_chunk, self.dtype)
-
 
     @property
     def phi_(self) -> np.ndarray:

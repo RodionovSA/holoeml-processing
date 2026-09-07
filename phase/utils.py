@@ -2,9 +2,14 @@
 
 Pre-solve: :func:`_carrier_dc_amplitudes` and the two measurements built on
 it, :func:`measure_frame_contrast` and :func:`measure_frame_visibility`,
-used by :meth:`phase.solver.PhaseSolver._estimate_gain` to resolve each
-frame's fringe gain ``g_n`` (Eq. (8) of ``docs/interference_model.md``)
-before dispatching to a phase-recovery method.
+independent estimates of each frame's fringe gain ``g_n`` (Eq. (8) of
+``docs/interference_model.md``) from its spatial carrier. Not part of
+:class:`phase.solver.PhaseSolver`'s own solve path -- its
+``gain_mode="joint"`` fits ``g_n`` inside the chosen method's own
+iteration instead (see :func:`phase.methods.aia.aia`'s ``fit_gain``),
+which unlike these functions makes no assumption about the fringe
+pattern's spatial frequency. Pass :func:`measure_frame_contrast`'s result
+as :class:`phase.solver.PhaseConfig`'s ``g`` to use it instead.
 
 Post-solve: :func:`frame_visibility_from_fit` and :func:`phase_step_coverage`,
 computed from an already-fitted :class:`phase.solver.PhaseResult`'s own
@@ -123,19 +128,29 @@ def measure_frame_contrast(stack: np.ndarray, dc_radius: int = 8,
     solve, so it can be supplied as a fixed input rather than estimated
     jointly with phase.
 
+    Not part of :class:`phase.solver.PhaseSolver`'s solve path -- its
+    ``gain_mode="joint"`` (the default) instead fits ``g_n`` inside the
+    chosen method's own iteration (e.g. :func:`phase.methods.aia.aia`'s
+    ``fit_gain``), which makes no assumption about the fringe pattern's
+    spatial frequency. This function, and :func:`_carrier_dc_amplitudes`
+    underneath it, locate a *linear* spatial-carrier sideband in each
+    frame's 2-D FFT, so they give a wrong (or undefined) answer on circular
+    or otherwise carrier-free fringes. Kept as a standalone utility -- pass
+    its result as :class:`phase.solver.PhaseConfig`'s ``g`` yourself if you
+    specifically want this carrier-peak estimate instead of the joint fit --
+    and as the basis for :func:`measure_frame_visibility`, the
+    cross-stack-comparable metric used for piezo coherence scans.
+
     See :func:`_carrier_dc_amplitudes` for the carrier-peak method and all
     parameters (identical here).
 
     Returns
     -------
     np.ndarray, shape (N,)
-        Per-frame contrast, normalized so ``median(g) = 1`` -- this is what
-        :meth:`phase.solver.PhaseSolver._estimate_gain` passes as ``g`` to
-        the selected phase-recovery method (see
-        :class:`phase.solver.PhaseConfig`'s ``use_g``). Relative *within
-        this stack only* -- use :func:`measure_frame_visibility` instead to
-        compare contrast across separately-captured frames or stacks (e.g.
-        a piezo coherence scan).
+        Per-frame contrast, normalized so ``median(g) = 1``. Relative
+        *within this stack only* -- use :func:`measure_frame_visibility`
+        instead to compare contrast across separately-captured frames or
+        stacks (e.g. a piezo coherence scan).
     """
     xp = get_array_module(stack)
     amp, _ = _carrier_dc_amplitudes(stack, dc_radius, halfwin, frame_chunk, dtype)

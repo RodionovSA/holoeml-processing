@@ -50,6 +50,14 @@ does not appear in the model the solver assumes. This document computes the resu
 the recovered $(a, u, v)$ and, from them, $(a, b, \Phi)$, then (§8) derives an estimator that
 recovers $\{c_{jn}\}$ from the AIA residual.
 
+Everywhere below, $g_n$ is treated as a known value at the point the linearization is taken
+around — this derivation does not care whether it came from a separate measurement or from
+`aia.md`'s jointly-fitted `fit_gain` path. `phase.methods.step_field.aia_step_field` re-derives
+$g_n$ (and the AIA pixel/frame step it re-runs each refinement round) from the current
+step-field-corrected data when `fit_gain=True`, so $g_n$ can change between refinement rounds;
+each round's $\{c_{jn}\}$ estimate (§8) is still computed against that round's own $(a,u,v,g)$,
+exactly as this document assumes.
+
 ### 1.2 Origin and gauge conventions
 
 Two independent conventions make the decomposition of Eq. (T1) unambiguous — one spatial, one
