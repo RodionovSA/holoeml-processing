@@ -25,32 +25,13 @@ from .base import MethodParam, _fmt_value
 def _poly_basis(H: int, W: int, degree: int, xp):
     """Orthonormal polynomial basis ``p_1..p_J`` of Eq. (T1), shape ``(J, H*W)``.
 
-    Enumerates the monomials of total degree ``1..degree`` in ``(x, y)`` on
-    centered, unit-normalized coordinates (``x, y`` each range roughly over
-    ``[-1, 1]``, keeping higher-degree terms from blowing up in magnitude),
-    mean-subtracts each one (the field-mean-zero gauge, Eq. T3), then
-    modified-Gram-Schmidt-orthonormalizes them in ascending degree order
-    against the field's pixel inner product ``sum_{x,y} f*g``. Mean-zero is
-    preserved under Gram-Schmidt (the difference of two zero-mean vectors is
-    zero-mean), so every returned row still satisfies Eq. (T3) exactly.
-
-    At ``degree=1`` this returns (unit-normalized) ``x, y`` themselves: on a
-    centered rectangular grid ``sum_{x,y} x*y = 0`` already (the grid is
-    separable), so the two are already orthogonal and Gram-Schmidt is a
-    no-op beyond normalization. At ``degree=0`` there are no degree-``>=1``
-    monomials to include (``docs/step_field_residuals.md`` Eq. T1's basis
-    starts at degree 1 by construction -- degree 0 is the piston, handled
-    separately), so this returns the empty ``(0, H*W)`` basis: no step
-    field at all, the piston-only model.
-
-    Orthonormalizing (rather than using the raw Taylor monomials directly)
-    only changes the numerical conditioning of the per-frame regression in
-    :func:`fit_step_field` -- it does not change what the fit can represent,
-    since it spans the identical space of degree-``<=degree`` polynomials.
-
-    Cached per ``(H, W, degree, xp)``: the outer refinement loop in
-    :func:`aia_step_field` calls this once per iteration at the same shape
-    and degree, and Gram-Schmidt is ``O(J^2 * H*W)``, not free to redo.
+    Monomials of total degree ``1..degree`` in ``(x, y)`` on centered,
+    unit-normalized coordinates, mean-subtracted (the field-mean-zero
+    gauge, Eq. T3) and Gram-Schmidt-orthonormalized in ascending degree
+    order -- see ``docs/step_field_residuals.md`` §1.2(i). ``degree=0``
+    returns the empty ``(0, H*W)`` basis (no step field, the piston-only
+    model). Cached per ``(H, W, degree, xp)``: :func:`aia_step_field` calls
+    this every refinement iteration at the same shape/degree.
 
     Parameters
     ----------
@@ -65,7 +46,7 @@ def _poly_basis(H: int, W: int, degree: int, xp):
     -------
     np.ndarray, shape (J, H*W), float64
         ``J = (degree+1)*(degree+2)//2 - 1`` basis rows (``J=0`` at
-        ``degree=0``), each flattened row-major to match ``stack``'s pixel
+        ``degree=0``), flattened row-major to match ``stack``'s pixel
         flattening elsewhere in this package.
     """
     if degree < 0:
@@ -76,9 +57,8 @@ def _poly_basis(H: int, W: int, degree: int, xp):
     x = ((xx - xx.mean()) / max(W / 2.0, 1.0)).ravel()
     y = ((yy - yy.mean()) / max(H / 2.0, 1.0)).ravel()
 
-    # (ex, ey) exponent pairs for every monomial x^ex * y^ey of total degree
-    # 1..degree, ascending degree so lower-order terms are orthonormalized
-    # (and hence fixed) before higher-order ones are built on top of them.
+    # Monomial exponent pairs (ex, ey) of total degree 1..degree, ascending
+    # so lower-order terms are fixed before higher-order ones build on them.
     exponents = [(d - i, i) for d in range(1, degree + 1) for i in range(d + 1)]
     J = len(exponents)
     P = H * W
@@ -97,9 +77,8 @@ def _poly_basis(H: int, W: int, degree: int, xp):
 def _cond_batch(M, xp):
     """2-norm condition number of a batch of square matrices, shape ``(..., k)``.
 
-    Batched analogue of :func:`phase.methods.aia._cond3`; a matrix whose
-    smallest singular value is exactly zero (or the batch element is
-    otherwise singular) reports ``inf`` rather than dividing by zero.
+    Batched analogue of :func:`phase.methods.aia._cond3`; a singular batch
+    element reports ``inf`` rather than dividing by zero.
     """
     s = xp.linalg.svd(M, compute_uv=False)
     smin = s.min(axis=-1)
@@ -113,25 +92,17 @@ def fit_step_field(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.ndarra
                     chunk: int = 1_000_000) -> Tuple[np.ndarray, np.ndarray]:
     """Fit each frame's step-field coefficients from the AIA pixel-step residual.
 
-    ``docs/step_field_residuals.md`` §8 shows that a spatially-varying
-    phase-step error ``delta_n(x,y) = delta_n + sum_j c_jn*p_j(x,y)`` leaves
-    a first-order residual in the piston-model AIA fit (its Eq. T7)::
+    A spatially-varying phase-step error leaves a first-order residual in
+    the piston-model AIA fit, linear in each frame's coefficients
+    ``c_1n..c_Jn`` -- the transpose of :func:`aia_pixel_step`'s per-pixel
+    regression across frames. See ``docs/step_field_residuals.md`` §8,
+    Eq. (E1) for the derivation (``G^(n) c = -h^(n)`` solved independently
+    per frame).
 
-        r_n = I_n - (a + g_n*(u*cos(delta_n) + v*sin(delta_n))) ~= -w_n * sum_j c_jn*p_j
-
-    with ``w_n = u*sin(delta_n) - v*cos(delta_n)``. This is linear in
-    ``c_1n..c_Jn`` for each frame, so -- the transpose of
-    :func:`aia_pixel_step`'s per-pixel regression across frames -- each
-    frame's coefficients are recovered by an independent weighted linear
-    regression across pixels, onto the ``J`` basis images ``w_n * p_j``
-    (Eq. E1): ``G^(n) c = -h^(n)`` with ``G^(n)_jj' = sum_xy w_n^2*p_j*p_j'``,
-    ``h^(n)_j = sum_xy w_n*r_n*p_j``.
-
-    ``G^(n)`` is built from the basis's pairwise products in pixel chunks
-    (rather than materializing the full ``(H*W, J*(J+1)/2)`` pair-product
-    array at once, which for ``J=5`` on a several-megapixel field is a few
-    hundred MB) -- the same reduction-via-matmul idiom
-    :func:`phase.methods.aia._chunked_sigma` uses for the same reason.
+    ``G^(n)`` is built from the basis's pairwise products in pixel chunks,
+    rather than materializing the full pair-product array at once -- the
+    same idiom :func:`phase.methods.aia._chunked_sigma` uses, for the same
+    reason.
 
     Parameters
     ----------
@@ -180,9 +151,8 @@ def fit_step_field(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.ndarra
     g = xp.ones(N, dtype=xp.float64) if g is None else xp.asarray(g, dtype=xp.float64)
     c, s = xp.cos(delta), xp.sin(delta)
 
-    # Unique (j, j') pairs (j<=j') covering G's upper triangle -- computed in
-    # plain Python (J is small, at most a handful of basis terms) rather
-    # than relying on a particular xp providing triu_indices.
+    # Unique (j, j') pairs (j<=j') covering G's upper triangle, in plain
+    # Python since J is small (a handful of basis terms at most).
     iu = [jj for jj in range(J) for _ in range(jj, J)]
     ju = [kk for jj in range(J) for kk in range(jj, J)]
     iu, ju = xp.asarray(iu), xp.asarray(ju)
@@ -210,9 +180,8 @@ def fit_step_field(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.ndarra
     G[:, ju, iu] = G_flat
     cond = _cond_batch(G, xp)
 
-    # xp.linalg.solve's batched gufunc requires rhs's last two axes to be
-    # its own (m, n) core dims, not a trailing vector -- the explicit
-    # singleton axis is squeezed back off after solving.
+    # xp.linalg.solve's batched gufunc needs rhs's last two axes as its own
+    # (m, n) core dims -- the singleton axis is squeezed back off after.
     sol = xp.linalg.solve(G, -h[..., None])[..., 0]                     # (N, J)
     return sol.T, cond
 
@@ -220,19 +189,16 @@ def fit_step_field(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.ndarra
 def step_field_quality(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.ndarray,
                         delta: np.ndarray, coeffs: np.ndarray, basis: np.ndarray,
                         H: int, W: int, g: Optional[np.ndarray] = None,
-                        crop: int = 100) -> Tuple[float, np.ndarray]:
+                        crop: int = 100, precise_reduce: bool = True) -> Tuple[float, np.ndarray]:
     """Measure how much of the AIA residual the fitted step field actually explains.
 
-    Reconstructs each frame with the step-corrected phase step
-    ``delta_n + coeffs[:,n] @ basis`` in place of the piston-only
-    ``delta_n`` (see :func:`fit_step_field` and
-    ``docs/step_field_residuals.md``), and reports the ratio of that
-    residual's RMS to the raw data's RMS, both computed over a
-    border-cropped region (the fit and any smoothing artifacts are least
-    reliable near the edges). Intended to be called once per refinement
-    iteration, alongside :func:`fit_step_field`: ``rms_frac`` dropping from
-    one iteration to the next is the signal that the fitted step field is a
-    real correction rather than fitted noise.
+    Reconstructs each frame at the step-corrected phase step
+    ``delta_n + coeffs[:,n] @ basis`` and reports the ratio of that
+    residual's RMS to the raw data's RMS, over a border-cropped region (the
+    fit is least reliable near the edges). Intended to be called once per
+    refinement iteration alongside :func:`fit_step_field`: ``rms_frac``
+    dropping iteration to iteration is the signal that the fitted step
+    field is a real correction rather than fitted noise.
 
     Parameters
     ----------
@@ -256,6 +222,10 @@ def step_field_quality(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.nd
     crop : int, default 100
         Pixels excluded from each edge of the field before computing either
         RMS. ``crop=0`` compares over the full field.
+    precise_reduce : bool, default True
+        See :attr:`phase.solver.PhaseConfig.precise_reduce`. Controls the
+        dtype of every operand feeding the ``(N, P)`` reconstruction below,
+        and hence of the returned ``resid`` itself.
 
     Returns
     -------
@@ -263,7 +233,8 @@ def step_field_quality(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.nd
         RMS of the step-corrected-model residual divided by the RMS of
         ``stack``, both over the cropped region.
     resid : np.ndarray, shape (N, P)
-        The step-corrected-model residual (uncropped), in ``stack``'s dtype.
+        The step-corrected-model residual (uncropped), float64 if
+        ``precise_reduce`` (the default) else ``stack``'s own dtype.
     """
     if len(stack.shape) != 2:
         raise ValueError(f"Stack shape must be have 2 dims, but got {len(stack.shape)}")
@@ -286,25 +257,38 @@ def step_field_quality(stack: np.ndarray, a: np.ndarray, u: np.ndarray, v: np.nd
 
     xp = get_array_module(stack, a, u, v, delta, coeffs, basis)
     N = stack.shape[0]
-    delta = xp.asarray(delta, dtype=xp.float64)
-    coeffs = xp.asarray(coeffs, dtype=xp.float64)
-    g = xp.ones(N, dtype=xp.float64) if g is None else xp.asarray(g, dtype=xp.float64)
+    # Every operand feeding Delta_field/dn/model must already be at
+    # calc_dtype before those (N, P) arrays are built -- casting resid
+    # afterward is too late. basis is always float64 from _poly_basis, and
+    # u/v are already float64 in aia_step_field's actual usage, so without
+    # this they'd force float64 here regardless of precise_reduce.
+    calc_dtype = xp.float64 if precise_reduce else stack.dtype
+    delta = xp.asarray(delta, dtype=calc_dtype)
+    coeffs = xp.asarray(coeffs, dtype=calc_dtype)
+    g = xp.ones(N, dtype=calc_dtype) if g is None else xp.asarray(g, dtype=calc_dtype)
+    basis = basis.astype(calc_dtype, copy=False)
+    a = a.astype(calc_dtype, copy=False)
+    u = u.astype(calc_dtype, copy=False)
+    v = v.astype(calc_dtype, copy=False)
 
-    Delta_field = coeffs.T @ basis                                       # (N, P)
+    Delta_field = coeffs.T @ basis                                       # (N, P) in calc_dtype
     dn = delta[:, None] + Delta_field                                    # (N, P) corrected step
     model = a[None, :] + g[:, None] * (u[None, :] * xp.cos(dn) + v[None, :] * xp.sin(dn))
-    resid = stack - model
+    resid = stack - model                                                # calc_dtype (stack promotes to it if needed)
 
-    # Border crop, as a boolean mask over the flattened field -- crop=0
-    # leaves the mask all-True (the naive `mask[-0:] = False` would instead
-    # zero out the whole field, since Python's -0 == 0).
+    # Border crop as a boolean mask over the flattened field -- crop=0
+    # leaves it all-True (`mask[-0:] = False` would zero the whole field,
+    # since Python's -0 == 0, so this is guarded by `if crop > 0`).
     mask = xp.ones((H, W), dtype=bool)
     if crop > 0:
         mask[:crop] = mask[-crop:] = mask[:, :crop] = mask[:, -crop:] = False
     mask = mask.ravel()
 
-    rms_frac = float(xp.std(resid[:, mask].astype(xp.float64))
-                      / xp.std(stack[:, mask].astype(xp.float64)))
+    if precise_reduce:
+        rms_frac = float(xp.std(resid[:, mask].astype(xp.float64))
+                          / xp.std(stack[:, mask].astype(xp.float64)))
+    else:
+        rms_frac = float(xp.std(resid[:, mask]) / xp.std(stack[:, mask]))
     return rms_frac, resid
 
 
@@ -315,56 +299,53 @@ class StepFieldParam(MethodParam):
     Attributes
     ----------
     aia_param : AIAParam
-        ``kappa_p``, ``kappa_ps``, and ``predicted_rms`` recomputed against
-        the *final*, step-field-refined ``(a, u, v, delta)`` -- not the
-        initial piston-only solve. ``iters_run`` and ``converged`` instead
-        describe that initial :func:`phase.methods.aia.aia` call's own
-        alternating pixel/frame-step loop (see
-        :class:`phase.methods.aia.AIAParam`); the outer refinement loop has
-        its own ``refine_iters_run`` and ``refine_converged`` below.
+        ``kappa_p``, ``kappa_ps``, ``predicted_rms`` recomputed against the
+        *final*, step-field-refined ``(a, u, v, delta)``. ``iters_run``/
+        ``converged`` instead describe the initial
+        :func:`phase.methods.aia.aia` call's own loop -- the outer
+        refinement loop has its own ``refine_iters_run``/``refine_converged``
+        below.
     degree : int
         Highest total polynomial degree ``M`` fit (see :func:`_poly_basis`);
         ``1`` is a pure linear tilt.
     coeffs : np.ndarray, shape (J, N)
         Per-frame step-field coefficients ``c_jn`` from the *best* round
-        (see ``best_iter`` below), fit against the ``(a, u, v, delta)`` this
-        result reports -- not necessarily the last round run: a round that
-        makes ``rms_frac`` worse is kept in ``rms_frac_history`` but never
-        used for the reported fields. These are the raw per-frame
-        least-squares fit, not gauge-fixed (``docs/step_field_residuals.md``
-        Eq. T3b) -- each row's frame mean can carry an arbitrary offset
-        degenerate with ``phi``; subtract ``coeffs.mean(axis=1,
-        keepdims=True)`` yourself before interpreting a row as a physical
-        per-frame drift.
+        (see ``best_iter``), fit against the ``(a, u, v, delta)`` this
+        result reports. Raw per-frame least-squares fit, not gauge-fixed
+        (``docs/step_field_residuals.md`` Eq. T3b) -- subtract
+        ``coeffs.mean(axis=1, keepdims=True)`` yourself before reading a
+        row as physical per-frame drift.
     coeffs_rms : np.ndarray, shape (J,)
         RMS of each row of ``coeffs`` across frames -- a quick "was there
-        meaningful step-field error at all, and in which order" summary,
-        independent of the per-frame detail in ``coeffs`` itself.
+        meaningful step-field error, and in which order" summary.
     kappa_fit : float
         ``max`` over frames of the per-frame fit's condition number
         (Eq. E3) -- large values flag that ``degree`` has outrun what the
-        recorded fringe pattern can resolve, even if ``rms_frac`` still
-        looks good.
+        recorded fringe pattern can resolve, even if ``rms_frac`` looks good.
     rms_frac : float
-        The best round's :func:`step_field_quality` value (``==
-        min(rms_frac_history)``): RMS of the step-corrected-model residual
-        as a fraction of the raw data's RMS, over the cropped region.
+        The best round's :func:`step_field_quality` value
+        (``== min(rms_frac_history)``).
     rms_frac_history : list of float
         ``rms_frac`` at every refinement iteration, in order, including any
-        round that made it worse -- lets a caller inspect the full
-        convergence trace, not just the best round's value.
+        round that made it worse.
     refine_iters_run : int
         Number of refinement iterations actually run.
     refine_converged : bool
-        Whether the refinement loop stopped because a round's non-negative
+        Whether the loop stopped because a round's non-negative
         round-over-round improvement in ``rms_frac`` fell below
-        ``refine_tol`` (True) or because ``refine_iters`` was exhausted
-        without that happening (False). A round that made ``rms_frac``
-        worse never sets this True on its own -- see ``best_iter``.
+        ``refine_tol`` (True) or ``refine_iters`` was exhausted (False).
     best_iter : int
         0-indexed round that ``coeffs``/``kappa_fit``/``rms_frac`` were
-        taken from -- the round with the lowest ``rms_frac_history`` entry,
-        not necessarily the last one run. ``-1`` if ``refine_iters=0``.
+        taken from -- not necessarily the last one run. ``-1`` if
+        ``refine_iters=0``.
+    precise_reduce : bool
+        See :attr:`phase.solver.PhaseConfig.precise_reduce`. Carried here
+        (not just as a call argument) so :meth:`phase_step_field`, called
+        generically by :meth:`phase.solver.PhaseSolver.fit`, can honor it.
+    work_dtype
+        The working dtype ``aia_step_field`` actually solved in -- what
+        :meth:`phase_step_field` casts down to when ``precise_reduce`` is
+        False.
     """
 
     aia_param: AIAParam
@@ -377,6 +358,8 @@ class StepFieldParam(MethodParam):
     refine_iters_run: int
     refine_converged: bool
     best_iter: int
+    precise_reduce: bool
+    work_dtype: object
 
     def print_summary(self) -> None:
         """Delegate to the inner AIAParam, then print the refinement diagnostics."""
@@ -393,15 +376,14 @@ class StepFieldParam(MethodParam):
         """Piston ``delta_n`` plus the fitted per-frame step field ``coeffs[:,n] @ basis``.
 
         Overrides :meth:`phase.methods.base.MethodParam.phase_step_field`'s
-        plain broadcast -- this is what lets
-        :meth:`phase.solver.PhaseSolver.fit`'s reconstruction check see the
-        spatially-varying phase step this method actually recovers.
-        Reconstructs the basis via :func:`_poly_basis` from ``(H, W,
-        self.degree)`` rather than storing it on this dataclass -- the
-        basis is deterministic from those three values and cached there.
+        plain broadcast so :meth:`phase.solver.PhaseSolver.fit`'s
+        reconstruction check sees the spatially-varying phase step this
+        method recovers. Honors ``self.precise_reduce`` exactly as
+        :func:`step_field_quality` does (float64 vs. ``self.work_dtype``).
         """
-        basis = _poly_basis(H, W, self.degree, xp)                      # (J, P)
-        coeffs = xp.asarray(self.coeffs, dtype=xp.float64)
+        calc_dtype = xp.float64 if self.precise_reduce else self.work_dtype
+        basis = _poly_basis(H, W, self.degree, xp).astype(calc_dtype, copy=False)  # (J, P)
+        coeffs = xp.asarray(self.coeffs, dtype=calc_dtype)
         N = delta.shape[0]
         field = delta[:, None] + coeffs.T @ basis                       # (N, P)
         return field.reshape(N, H, W)
@@ -411,32 +393,24 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
                     delta0: Optional[np.ndarray] = None,
                     iters: int = 30, tol: float = 1e-4, dtype=None,
                     degree: int = 1, refine_iters: int = 5, refine_tol: float = 1e-3,
-                    crop: int = 100):
+                    crop: int = 100, precise_reduce: bool = True):
     """Advanced Iterative Algorithm with iterative, arbitrary-degree step-field refinement.
 
     Runs the piston-only :func:`phase.methods.aia.aia` to convergence, then
     alternates fitting the per-frame step-field residual
     (:func:`fit_step_field`), scoring it (:func:`step_field_quality`), and
-    removing its estimated intensity contribution from the *original* stack
-    before re-running the fast pixel/frame step
-    (:func:`~phase.methods.aia.aia_pixel_step`,
-    :func:`~phase.methods.aia.aia_frame_step`) -- until the round-over-round
+    removing its estimated contribution from the *original* stack before
+    re-running the pixel/frame step -- until the round-over-round
     improvement in ``rms_frac`` falls below ``refine_tol`` or
-    ``refine_iters`` is spent. See ``docs/step_field_residuals.md`` for the
-    step-field model this refines against, and ``docs/aia.md`` for the
-    inner piston-only solve.
+    ``refine_iters`` is spent. See ``docs/step_field_residuals.md`` §8.2
+    ("The algorithm") for the full step-by-step derivation, and
+    ``docs/aia.md`` for the inner piston-only solve.
 
-    Before building the correction fed into that re-solve, each round's
-    fitted coefficients are gauge-fixed (subtracting each basis term's
-    frame mean, ``docs/step_field_residuals.md`` Eq. T3b/E4) -- an exact
-    invariance of the forward model, so this changes nothing about what the
-    correction removes from the data, but it keeps the static part of any
-    basis term's coefficient out of the correction and lets the next
-    pixel/frame-step re-solve absorb it into ``Phi`` instead, where it
-    physically belongs (a per-frame-constant step-field term is
-    indistinguishable from part of ``phi_carrier``). The *reported*
-    ``coeffs`` (see :class:`StepFieldParam`) are the raw, non-gauge-fixed
-    fit against the final ``(a, u, v, delta)`` -- see that class's docstring.
+    Each round's fitted coefficients are gauge-fixed (subtracting each
+    basis term's frame mean, Eq. T3b/E4) before being used to correct the
+    data, so the static part of any term is left for the next pixel/frame
+    step to absorb into ``Phi`` instead. The *reported* ``coeffs`` (see
+    :class:`StepFieldParam`) are the raw, non-gauge-fixed fit.
 
     Parameters
     ----------
@@ -446,38 +420,32 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
         Per-frame fringe contrast -- see :func:`phase.methods.aia.aia`.
     fit_gain : bool, default False
         If True, recover ``g`` jointly rather than holding it fixed --
-        forwarded to the initial :func:`phase.methods.aia.aia` call, and
-        kept fitted (re-estimated each refinement round from the current
-        ``(u, v)``) throughout the step-field refinement below. See
-        :func:`phase.methods.aia.aia` for what this changes.
+        forwarded to the initial :func:`phase.methods.aia.aia` call and
+        kept fitted (re-estimated each refinement round) throughout.
     delta0, iters, tol, dtype
-        Passed through to the initial :func:`phase.methods.aia.aia` call;
-        see that function for their meaning.
+        Passed through to the initial :func:`phase.methods.aia.aia` call.
     degree : int, default 1
         Highest total polynomial degree to fit the step field to (see
         :func:`_poly_basis`); ``0`` disables the step-field correction
-        entirely (no refinement round ever runs, regardless of
-        ``refine_iters``), returning the plain-``aia`` result through this
-        same code path -- a baseline to compare higher degrees against.
-        ``1`` is a pure linear tilt (registered separately as
-        ``"aia_tilt"`` in :data:`phase.methods.METHOD_REGISTRY`), ``2``
-        adds curvature. ``docs/step_field_residuals.md`` §7 recommends
-        keeping this small (2-3): a higher degree couples more strongly into
-        the frame step's own estimate of ``delta_n``.
+        entirely, returning the plain-``aia`` result. ``1`` is a pure
+        linear tilt (registered separately as ``"aia_tilt"``), ``2`` adds
+        curvature. ``docs/step_field_residuals.md`` §7 recommends keeping
+        this small (2-3).
     refine_iters : int, default 5
-        Maximum number of refinement rounds. ``refine_iters=0`` skips
-        refinement entirely, returning the plain ``aia`` result (with
-        ``coeffs`` all zero) wrapped in a :class:`StepFieldParam`.
+        Maximum number of refinement rounds. ``0`` skips refinement
+        entirely, returning the plain ``aia`` result (``coeffs`` all zero).
     refine_tol : float, default 1e-3
-        Stop refining once a round's *non-negative* round-over-round drop in
+        Stop refining once a round's non-negative round-over-round drop in
         :func:`step_field_quality`'s ``rms_frac`` is below this. A round
-        that makes ``rms_frac`` worse does not stop the loop early and is
-        never returned: refinement keeps running (up to ``refine_iters``),
-        and whichever round had the lowest ``rms_frac`` overall is what is
-        ultimately returned -- see :attr:`StepFieldParam.best_iter`.
+        that makes ``rms_frac`` worse keeps the loop running but is never
+        returned -- see :attr:`StepFieldParam.best_iter`.
     crop : int, default 100
         Pixels excluded from each edge of the field when computing
         ``rms_frac`` (see :func:`step_field_quality`).
+    precise_reduce : bool, default True
+        See :attr:`phase.solver.PhaseConfig.precise_reduce`. Forwarded to
+        the initial ``aia`` call and to every ``aia_frame_step``/
+        ``step_field_quality`` call in the refinement loop below.
 
     Returns
     -------
@@ -495,13 +463,13 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
     g = xp.asarray(g, dtype=xp.float64)
 
     a_map, b0, phi0, delta, g, aia_param0 = aia(stack, g, fit_gain=fit_gain,
-                                                 delta0=delta0, iters=iters, tol=tol, dtype=dtype)
+                                                 delta0=delta0, iters=iters, tol=tol, dtype=dtype,
+                                                 precise_reduce=precise_reduce)
     a = a_map.reshape(-1)
     u = (b0 * xp.cos(phi0)).reshape(-1)
     v = (-b0 * xp.sin(phi0)).reshape(-1)
-    # aia()'s own c_fit (all zero when fit_gain=False) -- the per-frame
-    # offset (a, u, v) above were actually fit against, so the step-field
-    # regression below must be evaluated on the same DC-corrected data.
+    # (a, u, v) above were fit against I minus aia()'s own c_fit (zero when
+    # fit_gain=False) -- the step-field regression below must match.
     c = aia_param0.c_fit
 
     basis = _poly_basis(H, W, degree, xp)                            # (J, P)
@@ -516,54 +484,35 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
     best_iter = -1
     it = -1
 
-    # degree=0 has no coefficients to fit (J=0, no step-field basis at all)
-    # -- gate the loop on J too, so this is exactly the plain aia() result,
-    # the same short-circuit already documented for refine_iters=0. This
-    # also sidesteps feeding an empty basis into fit_step_field/_cond_batch,
-    # whose batched svd/solve calls aren't meant to handle a 0-column Gram
-    # matrix (no singular values to reduce over).
+    # degree=0 -> J=0: no step field to fit, so this loop is skipped and the
+    # plain aia() result passes through unchanged (same as refine_iters=0).
     for it in range(refine_iters if J > 0 else 0):
-        # I minus the current per-frame offset c -- fit_step_field's own
-        # model (Eq. E1) has no c_n term, so it must see the same
-        # DC-corrected data the pixel step (a, u, v) was actually fit
-        # against, exactly as aia()'s own pixel step does under fit_gain.
         Ic = I - c.astype(work_dtype)[:, None] if fit_gain else I
         coeffs_it, cond = fit_step_field(Ic, a, u, v, delta, basis, g=g)
         kappa_it = float(xp.max(cond))
-        rms_frac_it, _ = step_field_quality(Ic, a, u, v, delta, coeffs_it, basis, H, W, g=g, crop=crop)
+        rms_frac_it, _ = step_field_quality(Ic, a, u, v, delta, coeffs_it, basis, H, W, g=g, crop=crop,
+                                             precise_reduce=precise_reduce)
         rms_history.append(rms_frac_it)
 
-        # (a, u, v, delta, g, c) here are the values *before* this round's
+        # (a, u, v, delta, g, c) are the values *before* this round's
         # correction -- the state coeffs_it/rms_frac_it were actually fit
         # and scored against, so the snapshot is self-consistent.
         if best is None or rms_frac_it < best[-1]:
             best = (a, u, v, delta, g, c, coeffs_it, kappa_it, rms_frac_it)
             best_iter = it
 
-        # Only a genuine (non-negative) improvement below refine_tol counts
-        # as convergence -- a *worse* round must not look like "converged"
-        # just because prev_rms - rms_frac_it is negative and hence also
-        # less than a positive refine_tol. A regression keeps the loop
-        # running (up to refine_iters); it just isn't the best round, and
-        # the final answer below is always the best one seen, not the last.
+        # Only a non-negative improvement counts as converged -- a worse
+        # round must not look "converged" just because the drop is negative.
         if prev_rms is not None and 0 <= (prev_rms - rms_frac_it) < refine_tol:
             refine_converged = True
             break
         prev_rms = rms_frac_it
 
-        # Gauge-fix (Eq. T3b/E4) before building the correction: remove each
-        # basis term's frame mean so only the frame-to-frame-varying part of
-        # the fit is subtracted from the data, leaving the static part for
-        # the next pixel/frame-step re-solve to absorb into Phi.
-        coeffs_fixed = coeffs_it - coeffs_it.mean(axis=1, keepdims=True)
+        coeffs_fixed = coeffs_it - coeffs_it.mean(axis=1, keepdims=True)  # gauge-fix (Eq. T3b/E4)
 
-        # Remove this round's fitted (gauge-fixed) step field from the
-        # *original* stack (not a running-corrected buffer -- each round's
-        # coeffs already estimates the total current-best step field, not
-        # an increment) and re-run the fast, shared-pseudoinverse
-        # pixel/frame step on the result. fit_step_field's own normal
-        # equations (Eq. E1) fit resid ~= -w*Delta, so removing that
-        # contribution means adding w*Delta back, not subtracting it.
+        # Correct the *original* stack (not a running buffer -- each round's
+        # coeffs estimate the total step field, not an increment). Eq. (E1)
+        # fits resid ~= -w*Delta, so recovering it means adding it back.
         cd, sd = xp.cos(delta), xp.sin(delta)
         w = g[:, None] * (xp.outer(sd, u) - xp.outer(cd, v))
         Delta_field = coeffs_fixed.T @ basis                          # (N, P)
@@ -572,8 +521,8 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
 
         a, u, v = aia_pixel_step(corrected_Ic, delta, g, dtype=work_dtype)
         if fit_gain:
-            u, v = _whiten_uv(u, v, xp)          # see aia.py's _whiten_uv docstring
-        new_delta, new_g, new_c = aia_frame_step(corrected, u, v)
+            u, v = _whiten_uv(u, v, xp)
+        new_delta, new_g, new_c = aia_frame_step(corrected, u, v, precise_reduce=precise_reduce)
         delta = new_delta - new_delta[0]
         if fit_gain:
             c = new_c - xp.mean(new_c)                                # gauge fix
@@ -592,7 +541,7 @@ def aia_step_field(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
         aia_param=aia_param, degree=degree, coeffs=coeffs, coeffs_rms=coeffs_rms,
         kappa_fit=kappa_fit, rms_frac=rms_frac, rms_frac_history=rms_history,
         refine_iters_run=refine_iters_run, refine_converged=refine_converged,
-        best_iter=best_iter,
+        best_iter=best_iter, precise_reduce=precise_reduce, work_dtype=work_dtype,
     )
 
     phi = xp.arctan2(-v, u).reshape(H, W)

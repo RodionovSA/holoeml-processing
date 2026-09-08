@@ -1,10 +1,9 @@
 """Solver class for phase-shifting phase extraction methods.
 
-:class:`PhaseResult` holds the fields that a solver produces, matching
-the per-frame model of ``docs/interference_model.md`` Eq. (8)::
-
-    I_n(x, y) = alpha_n * [a(x, y) + g_n * b(x, y) * cos(phi(x, y) + delta_n)]
-
+:class:`PhaseResult` holds the fields that a solver produces, matching the
+per-frame model of ``docs/interference_model.md`` Eq. (17): background
+``a``, fringe amplitude ``b``, phase ``phi``, per-frame step ``delta`` and
+gain ``g``, and source-power factor ``alpha``.
 """
 
 from dataclasses import dataclass, field
@@ -46,7 +45,7 @@ class PhaseResult:
         -- see :data:`METHODS` and :class:`MethodParam`.
     reconstruction_error : float
         RMSE, in the input stack's original units, between the input stack
-        and Eq. (8) evaluated at ``phi, a, b, delta, g, alpha`` -- a
+        and Eq. (17) evaluated at ``phi, a, b, delta, g, alpha`` -- a
         method-agnostic fit-quality check computed the same way regardless
         of ``method`` (see :meth:`PhaseSolver.fit`).
 
@@ -140,6 +139,18 @@ class PhaseConfig:
         Extra keyword arguments passed through to the selected method
         (e.g. ``{"iters": 50, "tol": 1e-5}`` for ``method="aia"``) -- see
         the chosen method's function for what it accepts.
+    precise_reduce : bool, default True
+        If True, the chosen method's few reductions that scale with the
+        full ``(N, H, W)`` stack (rather than a small per-frame or
+        per-pixel array) run in float64, at the cost of a full-size float64
+        temporary copy of the stack at each such point -- see
+        :func:`phase.methods.aia.aia_frame_step`'s docstring for exactly
+        where and why. If False, those reductions run at the working
+        ``dtype`` instead (normally float32), roughly halving peak memory
+        there. Leave True unless your acquisition's own noise floor already
+        exceeds float32's rounding margin on this reduction (typically
+        around 1e-6, even under a poorly-conditioned ``kappa_p``) -- e.g. a
+        convergence tolerance set by measurement noise at 1e-4 or coarser.
 
     See :meth:`to_yaml`/:meth:`from_yaml` to save/load a configuration as
     a YAML file.
@@ -150,6 +161,7 @@ class PhaseConfig:
     g: Optional[np.ndarray] = None
     method: str = "aia"
     method_kwargs: dict = field(default_factory=dict)
+    precise_reduce: bool = True
 
     def __post_init__(self):
         if self.method.lower() not in METHODS:
@@ -181,6 +193,7 @@ class PhaseConfig:
             "g": self.g.tolist() if self.g is not None else None,
             "method": self.method,
             "method_kwargs": self.method_kwargs,
+            "precise_reduce": self.precise_reduce,
         }
 
         return data
@@ -258,8 +271,7 @@ class PhaseSolver:
     recover ``phi, a, b, delta`` -- and, when ``config.gain_mode ==
     "joint"`` (the default) and no explicit ``config.g`` is given, ``g``
     jointly with them, inside that method's own iteration. Results are read
-    back
-    from the fitted ``PhaseSolver`` via the ``phi_``, ``a_``, ``b_``,
+    back from the fitted ``PhaseSolver`` via the ``phi_``, ``a_``, ``b_``,
     ``delta_``, ``g_``, ``alpha_``, ``method_param_``, ``reconstruction_error_``
     properties -- see :class:`PhaseResult` for their definitions.
     """
@@ -319,14 +331,11 @@ class PhaseSolver:
             fit_gain = self.config.gain_mode == "joint"
         a, b, phi, delta, g, method_param = self._solve(normalized_stack, g, fit_gain)
 
-        # Eq. (8) evaluated at the fitted parameters, vs. the raw input --
-        # a method-agnostic fit-quality check (works the same for any
-        # method, since it only depends on the shared a/b/phi/delta/g/alpha
-        # contract, not on how they were produced). The phase-step term
-        # goes through method_param.phase_step_field rather than a plain
-        # delta[:, newaxis, newaxis] broadcast, so a method whose recovered
-        # step varies spatially (e.g. a per-frame tilt) is reconstructed
-        # correctly too -- see MethodParam.phase_step_field.
+        # Eq. (17) evaluated at the fitted parameters, vs. the raw input --
+        # method-agnostic since it only depends on the shared
+        # a/b/phi/delta/g/alpha contract. Uses method_param.phase_step_field
+        # rather than a plain broadcast so a spatially-varying step is
+        # reconstructed correctly too (see MethodParam.phase_step_field).
         H, W = phi.shape
         delta_field = method_param.phase_step_field(delta, H, W, xp)          # (N, H, W)
         carrier = g[:, xp.newaxis, xp.newaxis] * b[xp.newaxis, :, :] \
@@ -338,13 +347,14 @@ class PhaseSolver:
         return self
     
     def _solve(self, stack: np.ndarray, g: np.ndarray, fit_gain: bool):
-        """Dispatch to the configured method and recover its Eq. (8) fields.
+        """Dispatch to the configured method and recover its Eq. (17) fields.
 
         Looks up ``config.method`` in :data:`phase.methods.METHOD_REGISTRY`
         (already validated to exist by :class:`PhaseConfig`) and calls it
         with the normalized ``stack``, initial ``g``, ``fit_gain``
         (``config.gain_mode == "joint"`` and no explicit ``config.g``, see
-        :meth:`fit`), this solver's ``dtype``, and ``config.method_kwargs``.
+        :meth:`fit`), this solver's ``dtype``, ``config.precise_reduce``,
+        and ``config.method_kwargs``.
 
         Returns
         -------
@@ -355,7 +365,8 @@ class PhaseSolver:
             jointly fitted gain otherwise.
         """
         solve_fn = METHOD_REGISTRY[self.config.method.lower()]
-        return solve_fn(stack, g, fit_gain=fit_gain, dtype=self.dtype, **self.config.method_kwargs)
+        return solve_fn(stack, g, fit_gain=fit_gain, dtype=self.dtype,
+                         precise_reduce=self.config.precise_reduce, **self.config.method_kwargs)
 
     def _check_fitted(self):
         if self.result_ is None:
@@ -365,7 +376,7 @@ class PhaseSolver:
         """Normalize each frame's intensity and extract ``alpha``.
 
         Divides out only the frame-to-frame fluctuation in overall
-        intensity -- the common source-power factor ``alpha_n`` of Eq. (8)
+        intensity -- the common source-power factor ``alpha_n`` of Eq. (17)
         -- so the returned stack keeps the input's absolute scale rather
         than being rescaled to unit mean; ``a`` and ``b`` fit from it stay
         in the same (e.g. camera) units as the input. This estimates

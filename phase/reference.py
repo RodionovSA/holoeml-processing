@@ -54,7 +54,8 @@ def subtract_reference(phi: np.ndarray, phi_ref: np.ndarray,
     cannot guarantee that on its own.
 
     Why not: the phase-shifting model ``I_n = a + b*cos(phi + delta_n)``
-    (Eq. (8) of ``docs/interference_model.md``) is exactly invariant under
+    (the uniform-piston limit of ``docs/interference_model.md``, its
+    Eq. 20) is exactly invariant under
     ``(phi, delta) -> (-phi, -delta)`` for every frame at once (cosine is
     even), so no method solving this model from intensity data alone can
     tell ``+phi`` from ``-phi``. Each independent solve converges to *one*

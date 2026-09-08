@@ -1,7 +1,7 @@
 # PhaseSolver configuration (see phase.solver.PhaseConfig)
 
 # Per-frame normalization
-use_alpha: false   # divide out alpha_n before solving
+use_alpha: true   # divide out alpha_n before solving
 
 # Gain
 gain_mode: joint   # fit g_n jointly inside the method's own iteration ("none" fixes g_n=1)
@@ -9,4 +9,5 @@ g: null            # precomputed gain array; overrides gain_mode when set
 
 # Method
 method: aia_step_field
-method_kwargs: {"iters": 30, "tol": 1.0e-4, "degree": 1, "refine_iters": 5, "refine_tol": 1.0e-3}
+method_kwargs: {"iters": 30, "tol": 1.0e-4, "degree": 2, "refine_iters": 10, "refine_tol": 1.0e-4}
+precise_reduce: false   # false halves peak memory on the few stack-scale reductions

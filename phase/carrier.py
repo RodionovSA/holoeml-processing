@@ -54,11 +54,11 @@ def _next_smooth(n: int, factors=(2, 3, 5, 7)) -> int:
     pocketfft) handle efficiently. At a full-sensor acquisition size such as
     ``(2200, 3296)``, ``H, W`` factor as ``2^3*5^2*11`` and ``2^5*103`` -- the
     11 and 103 push both onto a slow mixed-radix/Bluestein path. Padding to
-    the next 7-smooth size (2200->2205, 3296->3360) measured ~1.8x faster in
-    testing, and is safe: the coarse FFT only has to land the peak within
-    about one bin of the true carrier, since :func:`_estimate_tilt`'s
-    closed-form refine then converges to the exact same fixed point
-    regardless of which nearby bin it started from.
+    the next 7-smooth size (2200->2205, 3296->3360) avoids that, and is
+    safe: the coarse FFT only has to land the peak within about one bin of
+    the true carrier, since :func:`_estimate_tilt`'s closed-form refine then
+    converges to the exact same fixed point regardless of which nearby bin
+    it started from.
     """
     k = n
     while True:
@@ -109,10 +109,9 @@ def _estimate_tilt(c: np.ndarray, w: np.ndarray, window: bool, refine_iters: int
     the current ``(fx, fy)`` estimate at all (same for ``Sy`` down rows).
     ``Sx``/``Sy`` are therefore computed once, and the fixed-point iteration
     that follows runs on their two (scalar) angles rather than re-summing
-    the full field every pass -- exact to float64 precision (matching a
-    direct per-iteration re-demodulation to within 1.4e-17 rad in fx, fy)
-    at a fraction of the memory traffic, and with zero further GPU kernel
-    launches once ``Sx``/``Sy`` are known.
+    the full field every pass -- exact to float64 precision, at a fraction
+    of the memory traffic, and with zero further GPU kernel launches once
+    ``Sx``/``Sy`` are known.
     """
     xp = get_array_module(c, w)
     H, W = c.shape
@@ -178,13 +177,10 @@ def _estimate_curvature(c: np.ndarray, w: np.ndarray, window: bool,
     boundaries -- the different block boundaries (equal-size crop vs.
     ``array_split``'s ragged groups, plus dropped edge pixels) shift each
     block's local tilt estimate slightly, which the regression then
-    propagates into ``kxx, kyy, kxy``. Measured on a full
-    ``remove_carrier(defocus=True)`` call at ``n_blocks=10``: up to ~7%
-    relative change in the fitted curvature coefficients, translating to a
-    0.06 deg RMS / 0.24 deg max change in the final ``phi`` -- about 5% of
-    the ~1.15 deg/acquisition scatter floor measured in
-    :func:`~phase.combine.combine_acquisitions`'s docstring, and well
-    within it.
+    propagates into ``kxx, kyy, kxy``. The resulting difference in the
+    final ``phi`` is well within the acquisition-to-acquisition scatter
+    this package otherwise expects (see
+    :func:`~phase.combine.combine_acquisitions`).
     """
     xp = get_array_module(c, w)
     H, W = c.shape
@@ -401,8 +397,8 @@ def remove_carrier(phi: np.ndarray, weight: Optional[np.ndarray] = None,
     Notes
     -----
     The block-regression estimate is exact for a pure carrier+curvature
-    field (verified against synthetic data with no other structure); on
-    real data any genuine object phase with local structure comparable to
+    field with no other structure; on real data any genuine object phase
+    with local structure comparable to
     the block size will mildly bias individual blocks' tilt estimates,
     the usual resolution/robustness trade-off of a block size -- fewer,
     larger blocks average out more of that bias but track less localized

@@ -2,7 +2,7 @@
 
 Pre-solve: :func:`_carrier_dc_amplitudes` and the two measurements built on
 it, :func:`measure_frame_contrast` and :func:`measure_frame_visibility`,
-independent estimates of each frame's fringe gain ``g_n`` (Eq. (8) of
+independent estimates of each frame's fringe gain ``g_n`` (Eq. (17) of
 ``docs/interference_model.md``) from its spatial carrier. Not part of
 :class:`phase.solver.PhaseSolver`'s own solve path -- its
 ``gain_mode="joint"`` fits ``g_n`` inside the chosen method's own
@@ -117,7 +117,7 @@ def measure_frame_contrast(stack: np.ndarray, dc_radius: int = 8,
     """Measure each frame's fringe contrast directly from its spatial carrier.
 
     Phase-recovery methods generally assume every frame shares one
-    fringe-modulation map ``b(x, y)`` (Eq. (8) of
+    fringe-modulation map ``b(x, y)`` (Eq. (17) of
     ``docs/interference_model.md``); in practice illumination drift,
     source-coherence roll-off over a long scan, or per-shot exposure
     variation make the *true* per-frame contrast ``g_n`` deviate from 1 --
@@ -161,7 +161,8 @@ def measure_frame_visibility(stack: np.ndarray, dc_radius: int = 8,
                               dtype=None) -> np.ndarray:
     """Measure each frame's fringe visibility, absolutely (not stack-relative).
 
-    Eq. (8) of ``docs/interference_model.md`` models each frame as
+    The uniform-piston limit of ``docs/interference_model.md`` (its
+    Eq. 20) models each frame as
     ``I_n = alpha_n * [a + g_n*b*cos(phi + delta_n)]``, so the *true*
     visibility of a fringe pattern is ``b/a`` (Michelson's
     ``(Imax-Imin)/(Imax+Imin)``). :func:`measure_frame_contrast` measures
@@ -205,10 +206,10 @@ def measure_frame_visibility(stack: np.ndarray, dc_radius: int = 8,
 def frame_visibility_from_fit(g: np.ndarray, b: np.ndarray, a: np.ndarray) -> np.ndarray:
     """Per-frame fringe visibility from already-fitted model parameters.
 
-    Eq. (8) of ``docs/interference_model.md`` gives the per-frame visibility
-    as ``V_n = g_n * b/a`` (see its "Consequences" section); ``b/a`` varies
-    per pixel, so this reduces it to one number per frame via the median
-    over the field before scaling by ``g_n``.
+    From ``docs/interference_model.md`` Eq. (20), ``I_n = alpha_n*[a +
+    g_n*b*cos(...)]``, so the per-frame visibility is ``V_n = g_n * b/a``;
+    ``b/a`` varies per pixel, so this reduces it to one number per frame via
+    the median over the field before scaling by ``g_n``.
 
     Unlike :func:`measure_frame_visibility` (which measures visibility
     directly from the raw stack via its spatial carrier, independent of any

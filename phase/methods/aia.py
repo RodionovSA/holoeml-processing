@@ -15,58 +15,41 @@ from .base import MethodParam, _fmt_value
 class AIAParam(MethodParam):
     """AIA's per-method diagnostics, carried on ``PhaseResult.method_param``.
 
+    See ``docs/aia.md`` §"Accuracy diagnostics" for the derivation of
+    ``kappa_p``, ``kappa_ps``, and ``predicted_rms``.
+
     Attributes
     ----------
     kappa_p : float
-        Condition number of the spatial (pixel-step) normal matrix
-        ``A_p`` -- how well the phase-shift distribution conditions the
-        per-pixel ``(a, u, v)`` solve. Enters the accuracy prediction
-        formula directly.
+        Condition number of the pixel-step normal matrix ``A_p`` -- large
+        values (>20) mean an unreliable solve; consider more evenly-spaced
+        phase shifts or more frames.
     kappa_ps : float
-        Condition number of the paper's *normalized* temporal design
-        (unit-circle directions ``cos(phi), sin(phi)``, i.e. amplitude
-        ``b`` divided out) -- how well the recovered phase pattern alone
-        covers the unit circle. Theoretically bounded below by 2, with 2
-        achieved when the phase is evenly distributed over ``2*pi`` (Chen
-        & Kemao 2019, Eq. 12/24). Large values mean the field has too
-        little phase variation (less than roughly one fringe) for the
-        frame step to reliably separate ``delta_n`` from noise -- this
-        can happen even when the loop reports ``converged``. Note this is
-        computed independently of the actual (amplitude-weighted) frame
-        step solve, so it can be *optimistic* when much of the field is
-        unmodulated (low ``b``), since flat background pixels contribute
-        spurious phase there without contributing real signal.
+        Condition number of the normalized frame-step design (unit-circle
+        directions, amplitude divided out), bounded below by 2. Large
+        values mean too little phase variation (less than ~one fringe) for
+        the frame step to reliably separate ``delta_n`` from noise, even
+        when the loop reports ``converged``.
     predicted_rms : float
-        Predicted RMS phase error, in radians, from the accuracy model
-        of Chen & Kemao (2019), Eq. 28/40.
+        Predicted RMS phase error, in radians (Chen & Kemao 2019, Eq. 28/40).
     iters_run : int
         Number of alternating least-squares iterations actually run.
     converged : bool
         Whether the loop stopped because ``tol`` was reached (True) or
-        because ``iters`` was exhausted without reaching it (False).
+        ``iters`` was exhausted (False).
     g_fit : np.ndarray, shape (N,)
-        Per-frame fringe contrast that ``(a, u, v)`` -- and hence ``b``,
-        ``phi`` -- were actually fit against: the *previous* iteration's
-        frame-step output when ``fit_gain=True`` (normalized so
-        ``median(g_fit) = 1``), or the input ``g`` unchanged when
-        ``fit_gain=False``. Not the same as this call's own updated ``g``
-        (the one this function returns), by the same one-iteration-behind
-        convention as ``kappa_p``/``kappa_ps``/``predicted_rms`` below.
+        Per-frame fringe contrast that ``(a, u, v)`` were actually fit
+        against -- one iteration behind this call's own updated ``g`` when
+        ``fit_gain=True``, same convention as ``kappa_p``/``kappa_ps``.
     c_fit : np.ndarray, shape (N,)
-        Per-frame residual offset that ``(a, u, v)`` were actually fit
-        against, gauge-fixed so ``mean(c_fit) = 0`` (see
-        :func:`aia_frame_step`) -- same one-iteration-behind convention as
-        ``g_fit``. All zero when ``fit_gain=False``. Should be small when
-        ``PhaseConfig.use_alpha`` has already removed frame-to-frame
-        brightness drift; a large value here is itself the signal that it
-        has not.
+        Per-frame residual offset ``(a, u, v)`` were fit against,
+        gauge-fixed to ``mean(c_fit) = 0``. All zero when ``fit_gain=False``;
+        large otherwise signals ``PhaseConfig.use_alpha`` hasn't fully
+        removed frame-to-frame brightness drift.
     g_min_ratio : float
-        ``min(g_fit) / median(g_fit)``. A frame whose data is nearly
-        uncorrelated with the recovered fringe pattern ``(u, v)`` gets
-        ``g_n -> 0`` -- useful automatic downweighting in the pixel step,
-        but it also means that frame's ``delta_n`` is poorly determined.
-        A very small ratio flags that a frame should probably be dropped
-        from the acquisition rather than trusted.
+        ``min(g_fit) / median(g_fit)``. Very small means some frame is
+        nearly uncorrelated with the recovered fringe pattern and should
+        probably be dropped from the acquisition.
     """
 
     kappa_p: float
@@ -90,11 +73,8 @@ class AIAParam(MethodParam):
 def _cond3(M, xp):
     """2-norm condition number of a small square matrix ``M`` (here 3x3).
 
-    Equivalent to ``np.linalg.cond(M)`` (its default, ``p=None``, is exactly
-    ``smax/smin`` of the SVD for a square matrix) but implemented directly
-    via ``xp.linalg.svd`` rather than ``xp.linalg.cond`` -- cupy's ``linalg``
-    module doesn't provide ``cond``, while ``svd`` is available on both, so
-    this one implementation runs unchanged on numpy and cupy.
+    Implemented via ``xp.linalg.svd`` rather than ``xp.linalg.cond`` --
+    cupy's ``linalg`` has no ``cond``, but both provide ``svd``.
     """
     s = xp.linalg.svd(M, compute_uv=False)
     smin = float(s.min())
@@ -106,47 +86,15 @@ def _cond3(M, xp):
 def _whiten_uv(u: np.ndarray, v: np.ndarray, xp) -> Tuple[np.ndarray, np.ndarray]:
     """Rotate/shear ``(u, v)`` to have equal pixel-sum energy and be orthogonal.
 
-    Required after every pixel step when ``fit_gain`` is True (see
-    :func:`aia`), to fix a gauge freedom that only appears once ``g_n`` is
-    free. With ``g_n`` fixed at 1, ``aia_frame_step``'s ``(P_n, Q_n)`` is
-    implicitly constrained to the unit circle (``P_n=cos(delta_n),
-    Q_n=sin(delta_n)``), which is what makes plain AIA identifiable up to
-    just a global phase origin and the documented sign branch. Once
-    ``g_n`` floats, ``(P_n, Q_n)`` is unconstrained in the plane, and the
-    model ``a(x) + c_n + P_n*u(x) + Q_n*v(x)`` is then invariant under
-    *any* invertible linear reparametrization ``(u, v) -> (u, v) @ M``,
-    ``(P, Q) -> (P, Q) @ M^-T`` -- because ``{1, u, v}`` and
-    ``{1, u@M, v@M}`` span the same subspace for any invertible ``M``, not
-    just a rotation. Left alone, the alternating solve can converge to any
-    basis of that subspace: it fits the data exactly as well (often
-    *better*, since a generic basis has more freedom to explain noise) but
-    ``(P_n, Q_n)`` no longer traces ``(g_n*cos(delta_n), g_n*sin(delta_n))``
-    for any physically meaningful ``delta_n``, so the recovered phase can
-    be badly wrong even though ``reconstruction_error`` looks good --
-    verified on synthetic data: without this step, a fit that halves the
-    residual relative to the correctly-identified (fixed-``g``) solution
-    can still land tens of degrees off in phase.
-
-    Forcing ``sum(u**2) == sum(v**2)`` and ``sum(u*v) == 0`` (the pixel-sum
-    inner product) collapses the residual gauge from the full invertible
-    group down to just rotations and reflections (``O(2)``) -- exactly the
-    ambiguity plain AIA already has and already resolves elsewhere (phase
-    origin via ``delta[0] = 0``, sign via the documented ``(phi, delta) ->
-    (-phi, -delta)`` branch), rather than the two of them plus an
-    additional two-parameter shear/scale family. Total pixel-sum energy
-    (the Gram matrix's trace) is preserved, so this does not change ``g``'s
-    overall scale -- only :func:`aia`'s own ``g /= median(g)`` step does.
-
-    This does not change the objective any :func:`aia_pixel_step` call
-    already minimized: ``(u, v)`` and their whitened version span the same
-    3-D column space (together with the constant term), so the very next
-    :func:`aia_frame_step` call -- an unconstrained per-frame regression
-    against whichever basis it is given -- always reaches a joint residual
-    at least as low as before whitening. The eigendecomposition of the
-    tiny (2, 2) Gram matrix is done via plain ``numpy`` regardless of
-    ``xp`` (cupy has no advantage on a 2x2 matrix); only the elementwise
-    combination of ``(u, v)`` with the resulting scalar coefficients runs
-    on ``xp``.
+    Required after every pixel step when ``fit_gain`` is True, to fix a
+    gauge freedom that only appears once ``g_n`` is free -- see
+    ``docs/aia.md`` §"A gauge freedom that only appears once g_n is free".
+    Forcing ``sum(u**2) == sum(v**2)`` and ``sum(u*v) == 0`` collapses that
+    freedom from ``GL(2)`` down to ``O(2)``, the same ambiguity plain AIA
+    already resolves elsewhere (phase origin, sign branch). This does not
+    change the objective any :func:`aia_pixel_step` call already minimized
+    -- the very next :func:`aia_frame_step` call reaches a joint residual at
+    least as low as before whitening.
 
     Parameters
     ----------
@@ -181,9 +129,8 @@ def _whiten_uv(u: np.ndarray, v: np.ndarray, xp) -> Tuple[np.ndarray, np.ndarray
 def _pixel_design(delta: np.ndarray, g: np.ndarray, xp) -> np.ndarray:
     """Assemble the ``(N, 3)`` pixel-step design matrix ``[1, g*cos(delta), g*sin(delta)]``.
 
-    Shared by :func:`aia_pixel_step` (to solve for ``a, u, v``) and :func:`aia`
-    (to recompute the same matrix for the ``kappa_p`` / residual diagnostics)
-    so the two never drift apart.
+    Shared by :func:`aia_pixel_step` and :func:`aia` (for the ``kappa_p``
+    diagnostic) so the two never drift apart.
     """
     return xp.column_stack([xp.ones_like(delta), g * xp.cos(delta), g * xp.sin(delta)])
 
@@ -191,17 +138,14 @@ def _pixel_design(delta: np.ndarray, g: np.ndarray, xp) -> np.ndarray:
 def _chunked_sigma(I, A, X, xp, c=None, chunk: int = 1_000_000):
     """RMS of ``I - c - A @ X`` without ever materializing the full residual.
 
+    Streams over pixel chunks with a float64 accumulator instead of
+    allocating a second full ``(N, P)`` residual array just to reduce it to
+    one scalar -- otherwise the largest transient allocation in :func:`aia`
+    for a large stack.
+
     ``I`` is ``(N, P)`` in the working dtype, ``A`` is ``(N, 3)`` float64,
     ``X`` is ``(3, P)`` in ``I``'s dtype, ``c`` is an optional ``(N,)``
-    per-frame offset (the joint-gain fit's ``c_n``; omitted or ``None``
-    for the piston-only, ``fit_gain=False`` residual). The direct
-    ``resid = I - c[:, None] - A @ X; sqrt(mean(resid**2))`` allocates a
-    second full-size ``(N, P)`` array purely to reduce it to one scalar --
-    for a large stack this is the single largest transient allocation in
-    :func:`aia`, since it scales the same way ``I`` itself does. Streaming
-    over pixel chunks with a float64 accumulator gives a bit-identical
-    result at a small, fixed peak memory, and each chunk's matmul is small
-    enough to stay well under a display-GPU's watchdog kernel-timeout.
+    per-frame offset (``None`` for the ``fit_gain=False`` residual).
     """
     N, P = I.shape
     A_work = A.astype(I.dtype)
@@ -220,10 +164,8 @@ def _aia_diagnostics(I, delta_fit, g, a, u, v, N, xp, iters_run: int, converged:
     ``delta`` it was fit against.
 
     Factored out of :func:`aia` so :func:`phase.methods.step_field.aia_step_field`
-    can recompute the same ``kappa_p``/``kappa_ps``/``predicted_rms``
-    diagnostics for its own final, tilt-refined solution, using the exact
-    formula ``aia`` itself uses -- see :class:`AIAParam` for what each field
-    means and :func:`aia`'s Algorithm/Notes sections for the derivations.
+    can recompute the same diagnostics for its own final, refined solution --
+    see :class:`AIAParam` and ``docs/aia.md`` for the derivations.
 
     Parameters
     ----------
@@ -245,11 +187,11 @@ def _aia_diagnostics(I, delta_fit, g, a, u, v, N, xp, iters_run: int, converged:
     converged : bool
         Value to report as :attr:`AIAParam.converged`.
     c : np.ndarray, shape (N,), optional
-        Per-frame residual offset from the joint-gain frame step (see
-        :func:`aia_frame_step`), reported as :attr:`AIAParam.c_fit` and
-        subtracted from ``I`` before measuring the residual used for
-        ``predicted_rms``. ``None`` (the ``fit_gain=False`` default)
-        reports an all-zero ``c_fit`` and leaves ``I`` uncorrected.
+        Per-frame residual offset from the joint-gain frame step, reported
+        as :attr:`AIAParam.c_fit` and subtracted from ``I`` before measuring
+        the residual used for ``predicted_rms``. ``None`` (the
+        ``fit_gain=False`` default) reports an all-zero ``c_fit`` and
+        leaves ``I`` uncorrected.
 
     Returns
     -------
@@ -257,21 +199,12 @@ def _aia_diagnostics(I, delta_fit, g, a, u, v, N, xp, iters_run: int, converged:
     """
     P = I.shape[1]
 
-    # diagnostics (Chen & Kemao 2019): condition numbers of the two
-    # normal matrices, and the accuracy they predict.
     A = _pixel_design(delta_fit, g, xp)
     kappa_p = _cond3(A.T @ A, xp)
 
-    # kappa_ps: paper's *normalized* A_ps (Eq. 12), built from unit-circle
-    # directions cos(phi), sin(phi) with amplitude b divided out. This is
-    # deliberately different from the actual (amplitude-weighted) frame-step
-    # solve matrix B.T@B -- normalizing is what makes the >=2 bound and the
-    # "large is bad" threshold below meaningful; the amplitude-weighted
-    # version is skewed by fringe-visibility variation, not just phase
-    # coverage (see AIAParam.kappa_ps docstring). Assembled here from five
-    # scalar reductions rather than materializing a (P,3) design matrix
-    # ``C`` just to form ``C.T @ C`` -- same 3x3 Gram matrix, at a small
-    # fraction of the peak memory for a large acquisition.
+    # kappa_ps uses the *normalized* design (unit-circle directions, b
+    # divided out) -- see AIAParam.kappa_ps. Built from five scalar
+    # reductions rather than a (P,3) design matrix, for memory.
     u64, v64 = u.astype(xp.float64), v.astype(xp.float64)
     r = xp.maximum(xp.sqrt(u64**2 + v64**2), xp.finfo(xp.float64).eps)
     cphi, sphi = u64 / r, -v64 / r
@@ -327,16 +260,13 @@ def aia_pixel_step(stack: np.ndarray, delta: np.ndarray, g: Optional[np.ndarray]
                     dtype=None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-pixel least-squares solve for the background and quadrature fields.
 
-    With the per-frame phase steps ``delta_n`` (and contrasts ``g_n``) held
-    fixed, each pixel's ``N`` samples follow::
-
-        I_n = a + g_n * (u*cos(delta_n) + v*sin(delta_n))
-
-    which is linear in ``(a, u, v)``, so every pixel is solved independently
-    by one shared pseudoinverse of the ``(N, 3)`` design matrix. Here
-    ``u = b*cos(phi)``, ``v = -b*sin(phi)`` for fringe amplitude ``b`` and
-    phase ``phi``; recovering ``phi`` requires this to be paired with an
-    estimate of ``delta_n`` from elsewhere (e.g. :func:`aia_frame_step`).
+    With ``delta_n``/``g_n`` fixed, each pixel's ``N`` samples follow
+    ``I_n = a + g_n*(u*cos(delta_n) + v*sin(delta_n))``, linear in
+    ``(a, u, v)`` -- solved for every pixel at once via one shared
+    pseudoinverse of the ``(N, 3)`` design matrix. See ``docs/aia.md``
+    §"Pixel step". Here ``u = b*cos(phi)``, ``v = -b*sin(phi)``; recovering
+    ``phi`` needs this paired with a ``delta_n`` estimate (e.g.
+    :func:`aia_frame_step`).
 
     Parameters
     ----------
@@ -378,35 +308,26 @@ def aia_pixel_step(stack: np.ndarray, delta: np.ndarray, g: Optional[np.ndarray]
     return X[0], X[1], X[2]
 
 
-def aia_frame_step(stack: np.ndarray, u: np.ndarray, v: np.ndarray
+def aia_frame_step(stack: np.ndarray, u: np.ndarray, v: np.ndarray,
+                    precise_reduce: bool = True
                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-frame least-squares solve for each frame's phase step and gain.
 
-    With the quadrature fields ``(u, v)`` held fixed, each frame's ``P``
-    pixels follow ``I_n ~ c_n + P_n*u + Q_n*v`` for a free per-frame offset
-    ``c_n`` and coefficients ``(P_n, Q_n) = g_n*(cos(delta_n), sin(delta_n))``,
-    from which ``delta_n = atan2(Q_n, P_n)`` and ``g_n = hypot(P_n, Q_n)``.
-    This is the transpose of :func:`aia_pixel_step`'s solve: a linear
-    regression across pixels instead of across frames.
+    With ``(u, v)`` fixed, each frame's ``P`` pixels follow
+    ``I_n ~ c_n + P_n*u + Q_n*v`` for a free offset ``c_n`` and
+    ``(P_n, Q_n) = g_n*(cos(delta_n), sin(delta_n))``, giving
+    ``delta_n = atan2(Q_n, P_n)``, ``g_n = hypot(P_n, Q_n)`` -- the
+    transpose of :func:`aia_pixel_step`'s solve. See ``docs/aia.md``
+    §"Frame step".
 
-    ``c_n`` is left free rather than fixed to (or subtracted as) the
-    background field ``a`` from the pixel step: it absorbs the background
-    and any frame-to-frame brightness drift, and is re-derived from the raw
-    data on every call rather than carrying forward a mid-iteration estimate
-    of ``a`` -- feeding that estimate's own error back into this fit was
-    found empirically to be less robust. Callers that want a single joint
-    objective across both steps (see :func:`aia`'s ``fit_gain`` path) instead
-    feed this ``c_n`` *back into* the next pixel step, rather than folding it
-    into ``a`` here.
+    ``c_n`` is left free rather than folded into the pixel step's ``a``:
+    re-deriving it from raw data every call was found more robust than
+    carrying forward a mid-iteration estimate of ``a``.
 
-    The returned phase steps are absolute: this function does not resolve
-    the model's phase-origin ambiguity (a constant that can be added to
-    every ``delta_n``), so a caller comparing or iterating on ``delta``
-    should pin it to a reference (e.g. ``delta[0] = 0``) itself. Likewise
-    ``g_n`` is returned at whatever scale ``(u, v)`` happen to carry -- a
-    caller that wants the ``median(g) = 1`` convention used elsewhere in
-    this package (e.g. :func:`phase.utils.measure_frame_contrast`,
-    :attr:`phase.solver.PhaseResult.g`) should normalize it itself.
+    Returned ``delta`` is absolute (not pinned to a phase origin) and ``g``
+    is unnormalized -- a caller iterating on ``delta`` or wanting
+    ``median(g) = 1`` (see :attr:`phase.solver.PhaseResult.g`) must do so
+    itself.
 
     Parameters
     ----------
@@ -414,6 +335,8 @@ def aia_frame_step(stack: np.ndarray, u: np.ndarray, v: np.ndarray
         Interferogram frames flattened to ``P`` pixels each.
     u, v : np.ndarray, shape (P,)
         Quadrature components, e.g. as returned by :func:`aia_pixel_step`.
+    precise_reduce : bool, default True
+        See :attr:`phase.solver.PhaseConfig.precise_reduce`.
 
     Returns
     -------
@@ -437,18 +360,22 @@ def aia_frame_step(stack: np.ndarray, u: np.ndarray, v: np.ndarray
     u64 = xp.asarray(u, dtype=xp.float64)
     v64 = xp.asarray(v, dtype=xp.float64)
 
-    # Five scalar reductions build the (3,3) Gram matrix without ever
-    # materializing a (P,3) design matrix -- the same pattern used for
-    # kappa_ps in aia().
+    # (P,)-sized, so always float64 regardless of precise_reduce -- never
+    # touches stack, costs nothing.
     Su, Sv = float(xp.sum(u64)), float(xp.sum(v64))
     Suu = float(xp.sum(u64 * u64))
     Svv = float(xp.sum(v64 * v64))
     Suv = float(xp.sum(u64 * v64))
     BtB = xp.asarray([[float(P), Su, Sv], [Su, Suu, Suv], [Sv, Suv, Svv]])
 
+    # precise_reduce controls whether stack @ u/v promotes stack to float64
+    # (True) or runs at stack's own dtype (False) -- the one place in this
+    # function that actually costs memory.
+    u_mm = u64 if precise_reduce else xp.asarray(u, dtype=stack.dtype)
+    v_mm = v64 if precise_reduce else xp.asarray(v, dtype=stack.dtype)
     IB = xp.stack([xp.sum(stack, axis=1).astype(xp.float64),
-                    (stack @ u64).astype(xp.float64),
-                    (stack @ v64).astype(xp.float64)], axis=1)      # (N,3)
+                    (stack @ u_mm).astype(xp.float64),
+                    (stack @ v_mm).astype(xp.float64)], axis=1)      # (N,3)
 
     x = xp.linalg.solve(BtB, IB.T)                                  # (3,N)
     c, Pn, Qn = x[0], x[1], x[2]
@@ -459,131 +386,60 @@ def aia_frame_step(stack: np.ndarray, u: np.ndarray, v: np.ndarray
 
 def aia(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
         delta0: Optional[np.ndarray] = None,
-        iters: int = 30, tol: float = 1e-4, dtype=None):
+        iters: int = 30, tol: float = 1e-4, dtype=None,
+        precise_reduce: bool = True):
     """Advanced Iterative Algorithm (AIA) for phase-shifting interferometry.
 
-    Recovers the wrapped phase map from a stack of phase-shifted
-    interferograms whose phase-step sizes are not precisely known, by
-    jointly estimating the per-pixel fringe pattern and the per-frame
-    phase steps.
-
-    Model
-    -----
-    Each frame is assumed to follow the standard phase-shifting model::
-
-        I_n(x, y) = a(x, y) + g_n * b(x, y) * cos(phi(x, y) + delta_n)
-                  = a(x, y) + g_n * [u(x, y) * cos(delta_n) + v(x, y) * sin(delta_n)]
-
-    where ``u = b*cos(phi)``, ``v = -b*sin(phi)``, and ``g_n`` is each
-    frame's fringe contrast relative to the shared map ``b`` (see the ``g``
-    and ``fit_gain`` parameters). For fixed ``delta_n`` and ``g_n`` this is
-    linear in ``(a, u, v)``, and for fixed ``(u, v)`` it is linear in
-    ``delta_n`` -- but not linear in both at once, so the unknowns are
-    recovered by alternating least squares.
-
-    Algorithm
-    ---------
-    Each iteration alternates two linear solves, until the largest
-    per-frame update falls below ``tol`` (or ``iters`` is reached):
-
-    1. **Pixel step** (:func:`aia_pixel_step`) -- with ``delta_n`` (and
-       ``g_n``) fixed, recover the background ``a`` and quadrature
-       components ``u, v``, from ``stack - c_n`` when ``fit_gain`` is True
-       so this step and the frame step below minimize the same joint
-       residual. The normal matrix of this solve is ``A_p`` (Chen &
-       Kemao's notation).
-    2. **Whiten** (:func:`_whiten_uv`, only when ``fit_gain`` is True) --
-       rotate/shear ``(u, v)`` to equal pixel-sum energy and zero
-       correlation. With ``g_n`` free, step 1's ``(u, v)`` is only
-       determined up to an arbitrary invertible linear reparametrization
-       (a gauge that plain, fixed-``g`` AIA does not have, since there
-       ``(cos(delta_n), sin(delta_n))`` is already pinned to the unit
-       circle); left uncorrected, the iteration can converge to a
-       differently-fitting basis that reproduces the data just as well
-       (or better) but is no longer the true phase. This step is exact
-       and cost-free with respect to the objective below -- see its
-       docstring.
-    3. **Frame step** (:func:`aia_frame_step`) -- with ``(a, u, v)``
-       fixed, recover each frame's phase step ``delta_n`` and, when
-       ``fit_gain`` is True, its contrast ``g_n`` (normalized so
-       ``median(g) = 1``) and residual offset ``c_n`` (gauge-fixed so
-       ``mean(c) = 0``). The normal matrix of this solve is ``A_ps``.
-
-    Phase steps are re-referenced to frame 0 (``delta[0] = 0``) every
-    iteration, since the model has a phase-origin ambiguity that would
-    otherwise let the iteration drift. With ``fit_gain=True`` the joint
-    residual ``||stack - a - c - g*(u*cos(delta) + v*sin(delta))||`` then
-    decreases monotonically every iteration -- steps 1 and 3 are exact
-    least-squares minimizers of that one objective, and step 2 changes
-    nothing about the achievable value of that objective (it only fixes
-    which basis of the same subspace step 3 is handed) -- so a stall
-    (``iters`` exhausted without ``converged``) is a genuine local optimum
-    of the model, not the two steps chasing different targets.
+    Recovers the wrapped phase map, fringe amplitude, background, and
+    per-frame phase steps from a stack of phase-shifted interferograms
+    whose step sizes aren't precisely known, by alternating a per-pixel
+    least-squares solve (:func:`aia_pixel_step`) with a per-frame one
+    (:func:`aia_frame_step`) until convergence. See ``docs/aia.md`` for the
+    full derivation and the numbered algorithm, including the ``fit_gain``
+    joint-gain extension and its whitening step (:func:`_whiten_uv`).
 
     Parameters
     ----------
     stack : np.ndarray, shape (N, H, W)
         Phase-shifted interferogram frames, already alpha-normalized and on
-        the target device (:meth:`phase.solver.PhaseSolver.fit` does both
-        before dispatching here).
+        the target device (:meth:`phase.solver.PhaseSolver.fit` does both).
     g : np.ndarray, shape (N,)
-        Per-frame fringe contrast ``g_n`` (see Model). Used as the fixed,
-        already-resolved contrast when ``fit_gain=False`` (all ones if gain
-        estimation is disabled, ``PhaseConfig(gain_mode="none")``) and as
-        the initial guess when ``fit_gain=True``.
+        Per-frame fringe contrast. Fixed when ``fit_gain=False``, initial
+        guess when ``fit_gain=True``.
     fit_gain : bool, default False
-        If True, recover ``g_n`` jointly with ``delta_n`` in the frame step
-        instead of holding it fixed at the input ``g`` -- the extension
-        described under Algorithm above. Prefer this over an out-of-band
-        gain estimate (e.g. :func:`phase.utils.measure_frame_contrast`,
-        which assumes a spatial carrier and fails on circular or
-        carrier-free fringes) whenever contrast drifts frame-to-frame.
+        Recover ``g_n`` jointly with ``delta_n`` instead of holding it
+        fixed. Prefer this over an out-of-band estimate (e.g.
+        :func:`phase.utils.measure_frame_contrast`, which needs a spatial
+        carrier and fails on circular/carrier-free fringes) whenever
+        contrast drifts frame-to-frame.
     delta0 : np.ndarray, shape (N,), optional
-        Initial guess for the phase step of each frame, in radians. If
-        not given, defaults to evenly-spaced steps
-        ``delta0[i] = i * 2*pi / N``, which minimizes ``kappa_ps`` (its
-        theoretical lower bound is 2) and gives the most reliable
-        convergence when the true phase-shift distribution is unknown.
+        Initial guess for each frame's phase step, in radians. Defaults to
+        evenly-spaced steps, which minimizes ``kappa_ps`` (see
+        ``docs/aia.md`` §"Accuracy diagnostics").
     iters : int, default 30
         Maximum number of alternating least-squares iterations.
     tol : float, default 1e-4
-        Convergence tolerance, in radians for ``delta`` and in ``g``'s own
-        (median-1) units, on the largest per-frame change in ``delta`` (and,
-        when ``fit_gain`` is True, in ``g``) between iterations (Chen &
-        Kemao's recommended default for ``delta``).
+        Convergence tolerance on the largest per-frame change in ``delta``
+        (and, when ``fit_gain`` is True, in ``g``) between iterations.
     dtype : numpy/cupy dtype, optional
-        Working dtype for the large ``(N, P)``-shaped arrays (the interferogram
-        stack reshaped and every per-pixel quantity derived from it).
-        Defaults to ``float32`` (see :func:`phase.backend.default_dtype`) --
-        the camera already writes float32, and float64 here both doubles
-        memory for no benefit and runs at 1/32 throughput on non-datacenter
-        GPUs. The small per-iteration linear algebra (the two 3-unknown
-        normal-equation solves, condition numbers, and the residual
-        reduction used for ``predicted_rms``) always runs in float64
-        regardless of this setting, so accuracy is governed by the model,
-        not by this dtype -- verified against an equivalent float64-throughout
-        run at <1e-4 degrees RMS.
+        Working dtype for the ``(N, P)``-shaped arrays. Defaults to
+        ``float32`` (see :func:`phase.backend.default_dtype`); the small
+        per-iteration linear algebra always runs in float64 regardless of
+        this setting.
+    precise_reduce : bool, default True
+        See :attr:`phase.solver.PhaseConfig.precise_reduce`.
 
     Returns
     -------
     a, b, phi, delta, g : np.ndarray
-        The Eq. (8) fields recovered by this method -- ``a`` and ``b`` shape
-        ``(H, W)``, ``phi`` shape ``(H, W)`` wrapped to ``(-pi, pi]``,
-        ``delta`` and ``g`` shape ``(N,)``. ``g`` is the input ``g``
-        unchanged when ``fit_gain=False``, or the jointly fitted contrast
-        (``median(g) = 1``) when True. Numpy or cupy arrays matching
-        ``stack``'s array module -- not forced back to the host, so that
-        chaining ``aia`` -> :func:`~phase.combine.combine_acquisitions` on a
-        GPU doesn't round-trip large arrays over PCIe in between; call
-        :func:`phase.backend.asnumpy` yourself when you need a
-        guaranteed-numpy array.
+        ``a``, ``b``, ``phi`` shape ``(H, W)`` (``phi`` wrapped to
+        ``(-pi, pi]``); ``delta``, ``g`` shape ``(N,)``. ``g`` is the input
+        ``g`` unchanged when ``fit_gain=False``, or the jointly fitted
+        contrast (``median(g) = 1``) when True. Numpy or cupy arrays
+        matching ``stack``'s array module, not forced back to the host --
+        call :func:`phase.backend.asnumpy` yourself if needed.
     method_param : AIAParam
-        ``kappa_p, kappa_ps, predicted_rms`` are diagnostics for whether
-        this acquisition (frame count, phase-shift distribution, noise
-        level) supports a trustworthy result; ``iters_run, converged``
-        describe convergence; ``g_fit, c_fit, g_min_ratio`` describe the
-        joint-gain fit (all zero/one when ``fit_gain=False``). See
-        :class:`AIAParam`.
+        Convergence and accuracy diagnostics -- see :class:`AIAParam`.
 
     References
     ----------
@@ -593,14 +449,7 @@ def aia(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
 
     Y. Chen and Q. Kemao, "Advanced iterative algorithm for phase
     extraction: performance evaluation and enhancement," Optics Express
-    27(26), 37634-37651 (2019). Establishes that accuracy is governed by
-    the condition numbers of the two least-squares steps (``kappa_p``,
-    ``kappa_ps``, computed here) and the accuracy prediction formula used
-    for ``predicted_rms``; also shows the background term decouples from
-    the fringe terms when phase-shifts are well distributed, i.e. good
-    conditioning -- not subtracting ``a`` -- is the correct lever for
-    accuracy (see Notes).
-
+    27(26), 37634-37651 (2019).
     """
     xp = get_array_module(stack)
     N, H, W = stack.shape
@@ -622,21 +471,12 @@ def aia(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
         delta_fit = delta
         g_fit = g
         c_fit = c
-        # With fit_gain, both steps must minimize the same joint residual
-        # (Eq. (8) plus the per-frame offset c_n) for the iteration to be a
-        # true alternating least-squares descent -- so the pixel step sees
-        # stack minus the frame step's own c_n, not the raw stack. Without
-        # fit_gain this is a no-op (c stays zero throughout) and the loop
-        # is bit-for-bit identical to the piston-only path.
+        # No-op (c stays zero) unless fit_gain -- see docs/aia.md.
         I_pixel = I - c_fit.astype(work_dtype)[:, None] if fit_gain else I
         a, u, v = aia_pixel_step(I_pixel, delta_fit, g_fit, dtype=work_dtype)
         if fit_gain:
-            # Fixes a gauge freedom that only exists once g_n is free --
-            # see _whiten_uv's docstring. Not needed when g is fixed: the
-            # unit-circle constraint on (cos(delta), sin(delta)) already
-            # pins this gauge in that case.
             u, v = _whiten_uv(u, v, xp)
-        new_delta, new_g, new_c = aia_frame_step(I, u, v)
+        new_delta, new_g, new_c = aia_frame_step(I, u, v, precise_reduce=precise_reduce)
 
         new_delta = new_delta - new_delta[0]                          # pin phase origin
         step = float(xp.abs(wrap(new_delta - delta)).max())
@@ -658,8 +498,8 @@ def aia(stack: np.ndarray, g: np.ndarray, fit_gain: bool = False,
     b   = xp.sqrt(u64**2 + v64**2).reshape(H, W)
     a_map = a.reshape(H, W)
 
-    # Rebuilt from delta_fit/g_fit/c_fit (what (a, u, v) were actually fit
-    # against), not the updated delta/g/c from the final frame step.
+    # Diagnostics use what (a, u, v) were actually fit against
+    # (delta_fit/g_fit/c_fit), not the final frame step's update.
     method_param = _aia_diagnostics(I, delta_fit, g_fit, a, u, v, N, xp, it + 1, converged,
                                      c=(c_fit if fit_gain else None))
     return a_map, b, phi, delta, g, method_param

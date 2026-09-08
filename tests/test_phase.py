@@ -20,7 +20,7 @@ from phase import (
     subtract_reference,
 )
 from phase.backend import CUPY_AVAILABLE, wrap
-from phase.methods.step_field import _poly_basis
+from phase.methods.step_field import _poly_basis, step_field_quality
 
 
 def circ_rms_deg(a: np.ndarray, b: np.ndarray) -> float:
@@ -117,13 +117,14 @@ class TestPhaseConfig:
     def test_yaml_roundtrip(self, tmp_path):
         p = tmp_path / "config.yaml"
         cfg = PhaseConfig(use_alpha=False, gain_mode="none", method="aia_tilt",
-                           method_kwargs={"iters": 5})
+                           method_kwargs={"iters": 5}, precise_reduce=False)
         cfg.to_yaml(p)
         cfg2 = PhaseConfig.from_yaml(p)
         assert cfg2.use_alpha is False
         assert cfg2.gain_mode == "none"
         assert cfg2.method == "aia_tilt"
         assert cfg2.method_kwargs == {"iters": 5}
+        assert cfg2.precise_reduce is False
 
 
 class TestAIA:
@@ -150,6 +151,21 @@ class TestAIA:
         assert circ_rms_deg(r32.phi_, r64.phi_) < 1e-2
         assert r32.method_param_.iters_run == r64.method_param_.iters_run
         assert r32.method_param_.converged == r64.method_param_.converged
+
+    def test_precise_reduce_false_close_to_true(self):
+        # precise_reduce only changes which dtype aia_frame_step's
+        # stack-scale reduction runs in (phase/methods/aia.py) -- the
+        # recovered phase should be indistinguishable at the same threshold
+        # test_dtype_float32_close_to_float64 already uses for a genuine
+        # dtype change.
+        stack, truth = make_stack()
+        cfg_precise = PhaseConfig(gain_mode="none", precise_reduce=True)
+        cfg_fast = PhaseConfig(gain_mode="none", precise_reduce=False)
+        r_precise = PhaseSolver(cfg_precise).fit(stack)
+        r_fast = PhaseSolver(cfg_fast).fit(stack)
+        assert circ_rms_deg(r_fast.phi_, r_precise.phi_) < 1e-2
+        assert r_fast.method_param_.iters_run == r_precise.method_param_.iters_run
+        assert r_fast.method_param_.converged == r_precise.method_param_.converged
 
     def test_gain_auto_matches_supplied_gain_ranking(self):
         stack, truth = make_stack(seed=1)
@@ -301,6 +317,57 @@ class TestStepField:
         assert mp.coeffs.shape == (0, stack.shape[0])
         assert mp.refine_iters_run == 0
         assert mp.best_iter == -1
+
+    def test_precise_reduce_false_close_to_true(self):
+        # Same equivalence check as TestAIA's, for aia_step_field's own
+        # stack-scale reductions (aia_frame_step inside the refine loop,
+        # step_field_quality's model/resid reconstruction, and its RMS
+        # ratio -- all in phase/methods/step_field.py).
+        stack, truth = make_step_field_stack(kind="linear", gain_std=0.3)
+        kw = dict(iters=40, tol=1e-6, degree=1, refine_iters=8, refine_tol=1e-8, crop=5)
+        cfg_precise = PhaseConfig(use_alpha=False, gain_mode="joint", method="aia_step_field",
+                                   method_kwargs=kw, precise_reduce=True)
+        cfg_fast = PhaseConfig(use_alpha=False, gain_mode="joint", method="aia_step_field",
+                                method_kwargs=kw, precise_reduce=False)
+        r_precise = PhaseSolver(cfg_precise).fit(stack)
+        r_fast = PhaseSolver(cfg_fast).fit(stack)
+        assert circ_rms_deg(r_fast.phi_, r_precise.phi_) < 1e-2
+        assert r_fast.method_param_.rms_frac == pytest.approx(r_precise.method_param_.rms_frac, abs=1e-4)
+        assert np.allclose(r_fast.method_param_.coeffs, r_precise.method_param_.coeffs, atol=1e-3)
+        # method_param_ carries the setting it was solved with, so
+        # phase_step_field (called generically by PhaseSolver.fit's
+        # reconstruction-error check) can honor it too.
+        assert r_precise.method_param_.precise_reduce is True
+        assert r_fast.method_param_.precise_reduce is False
+        assert r_precise.method_param_.work_dtype == r_fast.method_param_.work_dtype == np.float32
+        assert r_fast.reconstruction_error_ == pytest.approx(r_precise.reconstruction_error_, abs=1e-4)
+
+    def test_step_field_quality_resid_dtype_matches_precise_reduce(self):
+        # step_field_quality's own regression test: resid must be float64
+        # when precise_reduce (matching its historical, unconditional
+        # behavior) and stack's own dtype -- never float64 -- when not,
+        # even though none of a/u/v/basis/coeffs/delta arrive pre-cast to
+        # stack's dtype (basis in particular is always float64 from
+        # _poly_basis).
+        rng = np.random.default_rng(2)
+        N, H, W = 10, 40, 50
+        P = H * W
+        stack = (rng.random((N, P)).astype(np.float32) + 1)
+        a = rng.random(P).astype(np.float32)
+        u = rng.random(P).astype(np.float32)
+        v = rng.random(P).astype(np.float32)
+        delta = np.sort(rng.uniform(0, 2 * np.pi, N))
+        basis = _poly_basis(H, W, 1, np)
+        coeffs = rng.standard_normal((basis.shape[0], N)) * 0.01
+
+        rms_precise, resid_precise = step_field_quality(
+            stack, a, u, v, delta, coeffs, basis, H, W, crop=5, precise_reduce=True)
+        rms_fast, resid_fast = step_field_quality(
+            stack, a, u, v, delta, coeffs, basis, H, W, crop=5, precise_reduce=False)
+
+        assert resid_precise.dtype == np.float64
+        assert resid_fast.dtype == stack.dtype
+        assert rms_fast == pytest.approx(rms_precise, abs=1e-4)
 
     def test_refine_loop_keeps_best_round_not_last(self, monkeypatch):
         """A round that makes rms_frac worse must not stop the loop early or be returned.

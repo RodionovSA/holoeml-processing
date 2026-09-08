@@ -55,11 +55,9 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
     per-frame model errors (contrast, phase-step), which are systematic
     within a run and need a better model rather than averaging (see
     :class:`phase.solver.PhaseConfig`'s ``gain_mode`` and
-    :func:`phase.utils.measure_frame_contrast`). Verified on repeated
-    bare-glass acquisitions: this random component was ~1.15 degrees per
-    acquisition and averaging brought a null-test difference down following
-    the expected ``1/sqrt(k)`` scaling (1.81 degrees for 1 acquisition vs.
-    1.30 degrees for an average of 2).
+    :func:`phase.utils.measure_frame_contrast`). Averaging ``k`` independent
+    acquisitions brings this random component down as the expected
+    ``1/sqrt(k)``.
 
     Three things must be resolved before a plain average of wrapped phase
     maps means anything, all handled here using existing functions in this
@@ -67,8 +65,7 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
 
     1. **Sign branch** -- each phase-recovery run independently lands on
        ``+phi`` or ``-phi`` (see :func:`~phase.reference.subtract_reference`).
-       Every
-       map is resolved against ``phis[reference]`` the same way
+       Every map is resolved against ``phis[reference]`` the same way
        ``subtract_reference`` does, and flipped if that gives lower spread;
        see ``sign_flips``. This is done on the *raw* input maps, before
        carrier removal (step 2) -- the shared carrier (from the raw
@@ -77,8 +74,7 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
        of the same object still share *after* their own carriers are
        independently removed is only the real surface figure, which can be
        comparable in size to acquisition-to-acquisition noise and too
-       marginal a signal to reliably resolve the branch from (this was
-       verified to produce spurious flips when tried in that order).
+       marginal a signal to reliably resolve the branch from.
     2. **Inter-acquisition drift** -- tilt/piston (and, if ``align_carrier``
        includes ``defocus``, curvature) generally differ slightly between
        acquisitions of the same nominal setup. Each sign-resolved map is
@@ -138,15 +134,8 @@ def combine_acquisitions(phis, weights=None, align_carrier: bool = True,
           else xp.clip(to_device(weights[i], device=device), 0, None)
           for i in range(n)]
 
-    # Sign resolution must happen on the *raw* maps, before carrier removal:
-    # the shared carrier (typically many cycles, since it comes from the raw
-    # tilt between object and reference beam) is a strong, unambiguous
-    # discriminant for the +/-phi branch. Once each map's own carrier has
-    # been independently removed, what two same-object acquisitions still
-    # share is only the much smaller real surface figure -- comparable in
-    # size to acquisition-to-acquisition noise, and too marginal a signal
-    # for reliable branch resolution (verified: doing it post-carrier-removal
-    # produced spurious flips even on genuinely unflipped inputs).
+    # Sign resolution on the raw maps, before carrier removal -- see step 1
+    # of this function's docstring for why.
     sign_flips = []
     resolved = list(phis)
     for i in range(n):
