@@ -31,7 +31,10 @@ cuda = ["cupy-cuda12x>=13.0,<15"]
 Repository = "https://github.com/RodionovSA/holoeml-processing"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "nbstripout>=0.9.1",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]
