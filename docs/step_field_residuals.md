@@ -322,7 +322,7 @@ linear combination of the same degree-$1\ldots M$ basis used for $\Delta_n$ itse
 zero field average (every $p_j$ does, Eq. T3) but is not generally zero at the centroid itself
 for $M\ge2$ — a curvature term contributes a bowl- or saddle-shaped envelope, zero on average but
 often largest in magnitude at the centroid. Only the pure-tilt terms ($j\in\{1,2\}$, $p_1=x,p_2=y$)
-vanish exactly at the centroid and grow linearly outward (the worked case of §9.3); a genuine
+vanish exactly at the centroid and grow linearly outward (the worked case of §10.3); a genuine
 quadratic-or-higher remainder need not share that property.
 
 Either way, the envelope is always a bounded, low-order (degree $\le M$, so $\le 2M$ for the
@@ -501,9 +501,97 @@ $\Phi$'s shape is reported — split unpredictably between the recovered $\Phi$ 
 $\{c_{jn}\}$ diagnostics — and, across refinement rounds, can leave that split drifting instead
 of settling.
 
-## 9. Harmonic fingerprint and vanishing conditions
+## 9. Direct phase-error computation for the corrected solve
 
-### 9.1 Discrete-Fourier framing and vanishing conditions
+Every refinement round's step 6 (§8.2) re-runs `aia_pixel_step` on the corrected data
+$I_n+w_n\Delta_n(x,y)$ — exactly `aia.md`'s own pixel step (its Eq. 16), not a different
+solve. Its error is therefore `aia.md`'s own Eq. (17) sandwich, with one new ingredient:
+not knowing the fitted $\Delta_n(x,y)$ exactly adds its own contribution to the noise that
+sandwich carries through.
+
+### 9.1 The same sensitivity as a piston-timing error
+
+Comparing this document's $w_n=uQ_n-vP_n$ (§2.3) with `aia.md`'s piston-sensitivity
+$\partial I_n/\partial\delta_n=-g_nb\sin(\Phi+\delta_n)$ (its Eq. 28):
+
+$$w_n(x,y) = -\frac{\partial I_n}{\partial\delta_n}(x,y) \tag{E5}$$
+
+— not a coincidence: $\Delta_n$ and $\delta_n$ enter Eq. (T2)'s cosine the same way,
+additively, so their derivatives at $\Delta_n=0$ coincide. A step-field error and a
+piston-timing error are, to first order, indistinguishable perturbations of the same
+argument, seen through the same sensitivity.
+
+### 9.2 Effective noise from the fitted step field
+
+Write $e_{\Delta_n}(x,y)=\Delta_n^{\text{fit}}(x,y)-\Delta_n(x,y)$ for the fitted step
+field's error at a pixel. Since Eq. (E1) is linear in the data, $e_{\Delta_n}(x,y) =
+p(x,y)^\top e_{c,n}$ with $e_{c,n}=-[G^{(n)}]^{-1}D_n^\top\varepsilon_n$ ($D_n$ the
+$(N_p,J)$ matrix with rows $w_n(x,y)p(x,y)$, i.e. Eq. (E1)'s own normal equations,
+linearized in the camera noise $\varepsilon_n$ exactly as `aia.md` Eq. (17) linearizes the
+pixel step). Substituting into the corrected data the same way `aia.md`'s Stage 2 reads
+a $\delta_n$ error as extra noise:
+
+$$\varepsilon_n^{\text{eff}}(x,y) = \varepsilon_n(x,y) + w_n(x,y)\,e_{\Delta_n}(x,y) \tag{E6}$$
+
+### 9.3 A discount, not a penalty
+
+Unlike `aia.md`'s Stage 2/3, this effective noise is **not** independent of
+$\varepsilon_n(x,y)$ at the same pixel — Eq. (E1)'s fit at frame $n$ is a regression
+*against this same pixel's own residual*, among all the others, so the cross-term
+`aia.md`'s Stage 2 drops as subleading (its "Computing $e_{\delta_n}$", the clause
+dropping the same-order cross-term between $e_{\delta_n}$ and this pixel's own noise) is
+here the leading effect and must be kept. Substituting Eq. (E1)'s solution into
+Eq. (E6), $\varepsilon_n^{\text{eff}} = (I-\text{Hat}_n)\varepsilon_n$ for the projection
+$\text{Hat}_n = D_n[G^{(n)}]^{-1}D_n^\top$ onto $D_n$'s column space — exactly the
+standard regression identity for a residual's own variance:
+
+$$\operatorname{Var}\big(\varepsilon_n^{\text{eff}}(x,y)\big) = \sigma_0(x,y)^2\big(1-h_n(x,y)\big), \qquad
+h_n(x,y) = w_n(x,y)^2\,p(x,y)^\top[G^{(n)}]^{-1}p(x,y) \tag{E7}$$
+
+$h_n(x,y)\in[0,1)$ is the fit's own leverage at that pixel. Correcting the data with a fit
+built from this same pixel's own residual *uses up* part of its noise in the correction,
+so the corrected pixel step ends up slightly **more** precise than `aia.md`'s own
+prediction, not less — the opposite sign from the $\delta_n$/$g_n$ corrections of
+`aia.md`'s Stage 2/3, and a direct consequence of the fit's self-reference rather than an
+independent estimate feeding in.
+
+A clean summary follows from $\sum_{x,y}h_n(x,y)=\operatorname{tr}(\text{Hat}_n)=J$
+exactly (the trace of a projection is its rank):
+
+$$\big\langle h_n\big\rangle_{x,y} = \frac{J}{N_p} \tag{E8}$$
+
+— the same flavor of exact, field-averaged headline number as `aia.md`'s
+$1+3/(2N_p)$/$1+2/N_p$ (its Eq. 34a/38a).
+
+### 9.4 Combining with `aia.md`
+
+Eq. (E7) is exactly `aia.md`'s own noise model (its Eq. 15/27a) with
+$\sigma_0(x,y)^2\to\sigma_0(x,y)^2(1-h_n(x,y))$ — a per-frame discount on the noise
+`aia.md`'s sandwich (Eq. 17) already carries, not a new mechanism. Every downstream
+formula built on that sandwich — the Eq. (22) baseline, and the $\delta_n$/$g_n$
+corrections of Eq. (34)/(38), since the initial `aia()` call and each round's
+`aia_frame_step` re-fit are exactly `aia.md`'s own Stage 2/3 mechanism — carries through
+unchanged with this substitution:
+
+$$\boxed{\;\sigma_\Phi^2(x,y)\big|_{\texttt{aia\_step\_field}} \;=\;
+\sigma_\Phi^2(x,y)\big|_{\text{Eq. (22)/(34)/(38)},\ \sigma_0^2\to\sigma_0^2(1-h_n)}\;} \tag{E9}$$
+
+strictly smaller than `aia.md`'s own prediction (Eq. 22/34/38 evaluated at the plain
+$\sigma_0^2$), by a field-averaged fraction $J/N_p$ (Eq. E8) — small for the low degrees
+($M=1$–$3$, $J=2$–$9$) this document already recommends (§7).
+
+**Scope.** Eqs. (E7)-(E9) are derived at the raw, non-gauge-fixed fit. `aia_step_field`'s
+actual gauge-fixing (Eq. E4) subtracts each coefficient's frame mean, adding a further
+cross-frame coupling not derived here in closed form — flagged, not modeled, the same way
+§7 argues rather than derives the frame step's own coupling to $\Delta_n$.
+
+**Practical note.** $[G^{(n)}]^{-1}$ is already computed by `fit_step_field` for every
+frame — it is how `coeffs` is solved — so Eq. (E7) costs nothing new to evaluate from
+what the algorithm already has.
+
+## 10. Harmonic fingerprint and vanishing conditions
+
+### 10.1 Discrete-Fourier framing and vanishing conditions
 
 For the uniform step set $\delta_n = 2\pi n/N$ (`aia.md`'s recommended default, minimizing
 $\kappa_{ps}$), $R_\Delta$, $R_\Delta^{(2)}$, and $\langle g^2\Delta\rangle$ are, respectively,
@@ -520,7 +608,7 @@ is a fixed combination of the per-order moments $\rho_j,\rho_j^{(2)},\mu_j$, the
 condition is $\rho_j=0$ (resp. $\rho_j^{(2)}=0$, $\mu_j=0$) for every $j=1,\dots,J$ — no single
 symmetry nulls all three at once, and raising $M$ only adds more moments that must each vanish.
 
-### 9.2 A frame-independent step field is harmless
+### 10.2 A frame-independent step field is harmless
 
 If the step-field coefficients do not vary from frame to frame, $c_{jn}\equiv c_j$ for every $j$,
 Eq. (T3b)'s gauge is violated maximally ($\bar c_j = c_j$) and by its invariance this is exactly
@@ -536,7 +624,7 @@ addition into $\Delta\Phi$'s already-harmless ramp. It is specifically a step fi
 **changes from frame to frame** that produces the $\Delta a$, $\Delta b$ fringes of §5–6. The
 underlying reason (Eq. T3b's gauge invariance) applies identically at any $M$.
 
-### 9.3 Worked case: a monotone drift
+### 10.3 Worked case: a monotone drift
 
 Take $g_n\equiv1$, the uniform step set $\delta_n=2\pi n/N$ ($n=0,\dots,N-1$), and a step field
 that drifts linearly over the sweep, $c_{jn}=\kappa_j n$ for constants $\kappa_j$ — e.g. a
@@ -561,19 +649,19 @@ i.e. the bias saturates to a fixed fraction of the drift's total span rather tha
 systematic, monotone step-field drift does not average away by acquiring more frames, whatever
 its spatial order.
 
-## 10. Summary table
+## 11. Summary table
 
 | Quantity | Harmonic order | Amplitude | Vanishes when |
 |---|---|---|---|
-| $\Delta a = -b\,\mathrm{Im}[R_\Delta e^{i\Phi}]$ | 1st | $b\,\lvert R_\Delta\rvert$, envelope degree $\le M$ | every $\rho_j=0$ (§9.1) — in particular a frame-independent step field under good coverage (§9.2), or a drift with no first-Fourier-bin component |
-| $\Delta b = -\dfrac{b}{\langle g^2\rangle}\,\mathrm{Im}[R_\Delta^{(2)}e^{i2\Phi}]$ (1st order) | 2nd | $\dfrac{b\,\lvert R_\Delta^{(2)}\rvert}{\langle g^2\rangle}$, envelope degree $\le M$ | every $\rho_j^{(2)}=0$ — same frame-independent condition (§9.2) |
+| $\Delta a = -b\,\mathrm{Im}[R_\Delta e^{i\Phi}]$ | 1st | $b\,\lvert R_\Delta\rvert$, envelope degree $\le M$ | every $\rho_j=0$ (§10.1) — in particular a frame-independent step field under good coverage (§10.2), or a drift with no first-Fourier-bin component |
+| $\Delta b = -\dfrac{b}{\langle g^2\rangle}\,\mathrm{Im}[R_\Delta^{(2)}e^{i2\Phi}]$ (1st order) | 2nd | $\dfrac{b\,\lvert R_\Delta^{(2)}\rvert}{\langle g^2\rangle}$, envelope degree $\le M$ | every $\rho_j^{(2)}=0$ — same frame-independent condition (§10.2) |
 | $\Delta b^{(2)}$ DC term, $-\dfrac{b\,S^{(0)}}{2\langle g^2\rangle}$ (2nd order) | 0th (visibility loss) | $\dfrac{b\,S^{(0)}}{2\langle g^2\rangle}$, $S^{(0)}\ge0$, envelope degree $\le 2M$ | only as $\Delta_n\to0$ for every $n$ (grows with distance from centroid for $M=1$; a smooth bowl/saddle of degree $2M$ in general) |
 | $\Delta\Phi$ ramp, $\langle g^2\Delta\rangle/\langle g^2\rangle$ (1st order) | 0th (spatial ramp) | $\lvert\langle g^2\Delta\rangle\rvert/\langle g^2\rangle$, envelope degree $\le M$ | every $\mu_j=0$; harmless when nonzero — same functional form as $\phi_{\text{carrier}}$, removed with it |
 | $\Delta\Phi$ fringe, $-\mathrm{Re}[R_\Delta^{(2)}e^{i2\Phi}]/\langle g^2\rangle$ (1st order) | 2nd | $\lvert R_\Delta^{(2)}\rvert/\langle g^2\rangle$, envelope degree $\le M$ | same condition as the $\Delta b$ 2nd-harmonic term |
-| Monotone drift (§9.3), $\lvert R_\Delta\rvert=\lvert\Lambda\rvert/2\sin(\pi/N)$ | 1st | grows with total excursion $\lvert\Lambda\rvert$ (any spatial order); **does not shrink with $N$** | $\kappa_j=0$ for every $j$ (no frame-to-frame drift) |
+| Monotone drift (§10.3), $\lvert R_\Delta\rvert=\lvert\Lambda\rvert/2\sin(\pi/N)$ | 1st | grows with total excursion $\lvert\Lambda\rvert$ (any spatial order); **does not shrink with $N$** | $\kappa_j=0$ for every $j$ (no frame-to-frame drift) |
 | Per-frame estimator conditioning, $\kappa_\Delta^{(n)}=\operatorname{cond}(G^{(n)})$ (§8.3) | — | — | good only while $M$ stays low enough that the fringe pattern's nulls don't make basis terms nearly degenerate under $w_n^2$-weighting |
 
-## 11. Assumptions used
+## 12. Assumptions used
 
 1. **Origin at the field centroid, each basis term zero-mean, and coefficients zero-frame-mean**
    (§1.2) — the first makes the piston/step-field split of Eq. (T1) exact; the second (Eq. T3b)

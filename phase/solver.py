@@ -13,6 +13,7 @@ import numpy as np
 import yaml
 
 from .backend import get_array_module, to_device
+from .errors import compute_phi_error
 from .methods import METHOD_REGISTRY, MethodParam
 from .methods.base import _fmt_value
 
@@ -48,6 +49,10 @@ class PhaseResult:
         and Eq. (17) evaluated at ``phi, a, b, delta, g, alpha`` -- a
         method-agnostic fit-quality check computed the same way regardless
         of ``method`` (see :meth:`PhaseSolver.fit`).
+    phi_error : np.ndarray, shape (H, W), optional
+        Per-pixel ``sigma_Phi(x, y)``, in radians -- ``docs/aia.md``'s
+        Eq. (22) plus Eq. (34)/(38) (see :func:`phase.errors.compute_phi_error`).
+        Computed for ``method="aia"``; ``None`` for every other method.
 
     Notes
     -----
@@ -66,6 +71,7 @@ class PhaseResult:
     alpha: np.ndarray
     method_param: MethodParam
     reconstruction_error: float
+    phi_error: Optional[np.ndarray] = None
 
     def to_device(self, device: str = "auto", dtype=None) -> "PhaseResult":
         """Return a copy with every array field moved to the given device.
@@ -81,9 +87,10 @@ class PhaseResult:
         -------
         PhaseResult
             A new instance with ``phi, a, b, delta, g, alpha`` moved to
-            ``device`` (and cast to ``dtype`` if given). ``method_param``
-            and ``reconstruction_error`` are plain Python scalars for every
-            currently registered method, so they're carried over unchanged.
+            ``device`` (and cast to ``dtype`` if given); ``phi_error`` too,
+            when not ``None``. ``method_param`` and ``reconstruction_error``
+            are plain Python scalars for every currently registered method,
+            so they're carried over unchanged.
         """
         return PhaseResult(
             phi=to_device(self.phi, device=device, dtype=dtype),
@@ -94,6 +101,8 @@ class PhaseResult:
             alpha=to_device(self.alpha, device=device, dtype=dtype),
             method_param=self.method_param,
             reconstruction_error=self.reconstruction_error,
+            phi_error=to_device(self.phi_error, device=device, dtype=dtype)
+            if self.phi_error is not None else None,
         )
 
     def print_summary(self) -> None:
@@ -151,6 +160,15 @@ class PhaseConfig:
         exceeds float32's rounding margin on this reduction (typically
         around 1e-6, even under a poorly-conditioned ``kappa_p``) -- e.g. a
         convergence tolerance set by measurement noise at 1e-4 or coarser.
+    noise_std : np.ndarray, shape (H, W), optional
+        Per-pixel camera noise standard deviation, ``docs/aia.md``'s
+        ``sigma_0(x, y)`` (Eq. 27a) -- the cross-frame quadrature mean of
+        each frame's own noise (e.g. from a photon transfer curve).
+    phi_error_simplified : bool, default True
+        If True, ``PhaseResult.phi_error`` is ``docs/aia.md`` Eq. (22)'s
+        baseline only. If False, adds Eq. (34)/(38)'s ``delta_n``/``g_n``
+        uncertainty correction -- ``O(1/N_p)`` relative to the baseline
+        (Eq. 34a/38a), at the cost of an ``(N, H, W)``-scale computation.
 
     See :meth:`to_yaml`/:meth:`from_yaml` to save/load a configuration as
     a YAML file.
@@ -162,6 +180,8 @@ class PhaseConfig:
     method: str = "aia"
     method_kwargs: dict = field(default_factory=dict)
     precise_reduce: bool = True
+    noise_std: Optional[np.ndarray] = None
+    phi_error_simplified: bool = True
 
     def __post_init__(self):
         if self.method.lower() not in METHODS:
@@ -194,6 +214,8 @@ class PhaseConfig:
             "method": self.method,
             "method_kwargs": self.method_kwargs,
             "precise_reduce": self.precise_reduce,
+            "noise_std": self.noise_std.tolist() if self.noise_std is not None else None,
+            "phi_error_simplified": self.phi_error_simplified,
         }
 
         return data
@@ -233,30 +255,13 @@ class PhaseConfig:
             raises ``TypeError``, and an invalid ``method`` or ``gain_mode``
             raises ``ValueError`` (same validation as constructing one
             directly).
-
-        Raises
-        ------
-        ValueError
-            If the file contains ``use_g``, ``dc_radius``, ``halfwin``, or
-            ``frame_chunk`` -- the FFT-based gain estimator these configured
-            (:func:`phase.utils.measure_frame_contrast`) has been replaced
-            by the ``gain_mode`` field (``"joint"`` fits gain inside the
-            method's own iteration instead), so a config written for the
-            old estimator would otherwise silently change meaning rather
-            than fail loudly.
         """
         with open(path) as f:
             data = yaml.safe_load(f) or {}
-        removed = {"use_g", "dc_radius", "halfwin", "frame_chunk"} & data.keys()
-        if removed:
-            raise ValueError(
-                f"{path!r} uses removed PhaseConfig field(s) {sorted(removed)} "
-                f"from the old FFT-based gain estimator -- replace them with "
-                f"gain_mode='joint' (fit gain jointly, the new default) or "
-                f"gain_mode='none' (fix g=1)."
-            )
         if data.get("g") is not None:
             data["g"] = np.asarray(data["g"], dtype=float)
+        if data.get("noise_std") is not None:
+            data["noise_std"] = np.asarray(data["noise_std"], dtype=float)
         return cls(**data)
 
 
@@ -272,8 +277,8 @@ class PhaseSolver:
     "joint"`` (the default) and no explicit ``config.g`` is given, ``g``
     jointly with them, inside that method's own iteration. Results are read
     back from the fitted ``PhaseSolver`` via the ``phi_``, ``a_``, ``b_``,
-    ``delta_``, ``g_``, ``alpha_``, ``method_param_``, ``reconstruction_error_``
-    properties -- see :class:`PhaseResult` for their definitions.
+    ``delta_``, ``g_``, ``alpha_``, ``method_param_``, ``reconstruction_error_``,
+    ``phi_error_`` properties -- see :class:`PhaseResult` for their definitions.
     """
 
     def __init__(self, config: PhaseConfig, device: str = "auto", dtype=None):
@@ -341,9 +346,21 @@ class PhaseSolver:
         carrier = g[:, xp.newaxis, xp.newaxis] * b[xp.newaxis, :, :] \
             * xp.cos(phi[xp.newaxis, :, :] + delta_field)
         rec_stack = alpha[:, xp.newaxis, xp.newaxis] * (a[xp.newaxis, :, :] + carrier)
-        rmse = float(xp.sqrt(xp.mean((stack - rec_stack) ** 2)))
+        residual = stack - rec_stack
+        rmse = float(xp.sqrt(xp.mean(residual ** 2)))
 
-        self.result_ = PhaseResult(phi, a, b, delta, g, alpha, method_param, rmse)
+        # Per-pixel fallback for phi_error's sigma_0(x, y) when noise_std isn't
+        # given: the same residual as rmse, averaged over frames only (axis 0)
+        # rather than over pixels too, so it stays a map.
+        if self.config.noise_std is not None:
+            noise_std = to_device(self.config.noise_std, device=self.device, dtype=self.dtype)
+        else:
+            noise_std = xp.sqrt(xp.mean(residual ** 2, axis=0))
+        phi_error = compute_phi_error(self.config.method, b, phi, delta, g, fit_gain,
+                                       noise_std, self.config.phi_error_simplified,
+                                       method_param, xp)
+
+        self.result_ = PhaseResult(phi, a, b, delta, g, alpha, method_param, rmse, phi_error)
         return self
     
     def _solve(self, stack: np.ndarray, g: np.ndarray, fit_gain: bool):
@@ -445,3 +462,8 @@ class PhaseSolver:
     def reconstruction_error_(self) -> float:
         self._check_fitted()
         return self.result_.reconstruction_error
+
+    @property
+    def phi_error_(self) -> Optional[np.ndarray]:
+        self._check_fitted()
+        return self.result_.phi_error

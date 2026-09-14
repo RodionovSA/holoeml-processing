@@ -40,6 +40,9 @@ known. Phase unwrapping and related tooling are planned as the project grows.
 - `docs/frame_moments.md`, `docs/step_field_residuals.md` — derivations of how
   non-ideal phase steps and per-frame contrast leak into frame statistics and
   into the AIA solve, respectively; the latter backs `methods/step_field.py`.
+- `docs/carrier_removal.md` — derives carrier removal as a wrap-invariant
+  optimization over a degree-`M` polynomial fit to `e^{i*phi}`; backs
+  `carrier.py`.
 - `main.py` — entry-point stub.
 - `tests/` — unit tests (synthetic data; run in seconds).
 - `scripts/test/` — notebook-based checks against real acquisitions.

@@ -31,7 +31,11 @@ class AIAParam(MethodParam):
         the frame step to reliably separate ``delta_n`` from noise, even
         when the loop reports ``converged``.
     predicted_rms : float
-        Predicted RMS phase error, in radians (Chen & Kemao 2019, Eq. 28/40).
+        Predicted RMS phase error, in radians (Chen & Kemao 2019, Eq. 28/40) -- an
+        empirical fit, not an exact result, and optimistic by ``sqrt(N/(N-3))`` from
+        ``sigma``'s degrees-of-freedom bias and by ``median(b)`` vs. a low-contrast-pixel
+        weighted average; see ``docs/aia.md`` §"Direct phase-error computation" for the
+        exact first-order expression and both caveats.
     iters_run : int
         Number of alternating least-squares iterations actually run.
     converged : bool
@@ -322,7 +326,10 @@ def aia_frame_step(stack: np.ndarray, u: np.ndarray, v: np.ndarray,
 
     ``c_n`` is left free rather than folded into the pixel step's ``a``:
     re-deriving it from raw data every call was found more robust than
-    carrying forward a mid-iteration estimate of ``a``.
+    carrying forward a mid-iteration estimate of ``a``. See ``docs/aia.md``
+    §"Why the background field can be dropped" for why dropping ``a`` here
+    is exact up to a bounded, frame-independent gauge displacement, not
+    merely an approximation.
 
     Returned ``delta`` is absolute (not pinned to a phase origin) and ``g``
     is unnormalized -- a caller iterating on ``delta`` or wanting

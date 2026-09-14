@@ -36,7 +36,7 @@ existing choices; it does not introduce new ones.
 |---|---|---|
 | Spatial origin for the tilt/curvature/piston split (origin-dependent — differs from the step-field's centroid convention above) | Pixel `(0,0)`, unnormalized `x,y` | `carrier.py` |
 | Global piston of the output | Weighted circular mean set to zero: `arg(Σ w·e^{iφ}) = 0` | `carrier.py` |
-| Carrier frequency `(fx,fy)`, defined only modulo 1 cycle/pixel | FFT-bin peak picks the representative; the refine step tracks the nearest branch to the current estimate | `carrier.py` |
+| Carrier frequency `(fx,fy)`, defined only modulo 1 cycle/pixel | FFT-bin peak picks the representative; the refine step tracks the nearest branch to the current estimate | `carrier.py`; `carrier_removal.md` §4 |
 
 ## Reference subtraction (`subtract_reference`)
 
