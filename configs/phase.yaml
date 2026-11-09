@@ -1,0 +1,36 @@
+# Settings for processing.phase.PhasePipeline (PipelineConfig.from_yaml)
+
+device: auto          # auto, cpu, cuda
+precision: single     # single, double, fast
+weight: b_ref         # sign-branch and carrier-fit weighting: b_ref (reference fringe amplitude) or none
+ambiguous_ratio: 1.5  # flag a sign choice whose two spreads are within this factor
+
+# Optional carrier removal after reference subtraction (phase_shift.remove_carrier)
+carrier:
+  enabled: false
+  degree: 1           # total polynomial degree: 0 piston, 1 tilt, 2 + defocus/astigmatism
+  window: 5           # odd window (px) for the starting estimate
+  subsample: 4        # start-grid stride; phase must change < pi over this many px
+  max_iter: 20        # Newton steps per grid
+  # Fit the carrier only on the uniform region (usually substrate), found iteratively:
+  # fit -> remove -> keep pixels within `threshold` of the dominant phase level -> refit
+  uniform_mask:
+    enabled: false
+    threshold: 0.3    # rad from the substrate level; must exceed noise + unmodelled carrier
+    grow: 0           # px, also reject pixels this close to a rejected one (edges)
+    iters: 5          # max fit/mask rounds
+    min_fraction: 0.05  # warn and keep previous mask if fewer allowed pixels survive
+
+# phase_shift.PhaseConfig fields
+solver:
+  use_alpha: true
+  gain_mode: joint    # joint, none
+  method: vp_aia      # aia, vp_aia
+  method_kwargs:
+    iters: 30
+    tol: 1.0e-4
+    basis: poly
+    basis_kwargs: {degree: 2}
+    orders: 1
+    order_tol: 0.0
+    crop: 100
