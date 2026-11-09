@@ -1,6 +1,6 @@
 [project]
 name = "holoeml-processing"
-version = "0.3.0"
+version = "0.4.0"
 description = "Process experimental data from holoeml project"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,19 +13,16 @@ dependencies = [
     "jupyter>=1.1.1",
     "matplotlib>=3.11.1",
     "numpy>=2.5.1",
-    "torch>=2.12", 
+    "torch>=2.12",
     "opencv-python>=5.0.0.93",
     "pyyaml>=6.0.3",
+    "phase-shift",
 ]
 
 [project.optional-dependencies]
-# GPU backend for `phase` (see phase/backend.py). Install the CUDA-major-
-# version wheel matching the *driver's* supported toolkit, not necessarily
-# the newest one: a CC < 7.5 GPU (e.g. Maxwell/Pascal/Volta, incl. the
-# Quadro K2200 this was written for) cannot run cupy-cuda13x binaries even
-# on a driver that advertises CUDA 13 support, since CUDA 13 dropped
-# offline compilation for those architectures -- use cupy-cuda12x there.
-cuda = ["cupy-cuda12x>=13.0,<15"]
+# GPU backend for phase-shift; see the `cuda` extra in phase-shift's
+# pyproject.toml for choosing the CUDA wheel that matches your GPU/driver.
+cuda = ["phase-shift[cuda]"]
 
 [project.urls]
 Repository = "https://github.com/RodionovSA/holoeml-processing"
@@ -36,9 +33,10 @@ dev = [
     "pytest>=8",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.uv]
+# Scripts/notebooks repo, not an installable package (phase extraction lives
+# in phase-shift).
+package = false
 
-[tool.hatch.build.targets.wheel]
-packages = ["phase"]
+[tool.uv.sources]
+phase-shift = { git = "https://github.com/RodionovSA/phase-shift" }
