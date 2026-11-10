@@ -23,6 +23,10 @@ Usage::
     meta.values                        # [125., 150., 175., 200., 225.]
     s["glass"]                         # (P,) or (k, P) if measured k times
     s.per_second()                     # counts / integration time
+    s.resample(400, 800, 5)            # (N, 81) on 400, 405, ..., 800 nm
+    read_folder(path, grid=(400, 800, 5), method="mean")   # same, at read time
+    s.smooth(12)                       # Savitzky-Golay, 12 nm window, native pixels
+    read_folder(path, smooth=12, grid=(400, 800, 5))       # smooth, then resample
 
 Spectra with different integration times are not comparable as raw counts;
 :func:`read_folder` warns when that is the case, see :meth:`SpectraSet.per_second`.
@@ -302,6 +306,96 @@ class SpectraSet:
         m = (w >= (-np.inf if wmin is None else wmin)) & (w <= (np.inf if wmax is None else wmax))
         return replace(self, wavelength=w[m], counts=self.counts[:, m])
 
+    def resample(self, start: float | None = None, stop: float | None = None,
+                 step: float | None = None, *, wavelength=None,
+                 method: str = "linear") -> SpectraSet:
+        """Put all spectra on a new wavelength grid.
+
+        Give either ``start, stop, step`` (``stop`` included, e.g. ``400, 800, 5`` ->
+        81 points) or an explicit ``wavelength`` array.
+
+        Parameters
+        ----------
+        method : {"linear", "mean"}
+            ``"linear"``: linear interpolation at each new point (``np.interp``).
+            ``"mean"``: average of all pixels within ``±step/2`` of each new point
+            (step = local grid spacing). When the new step is much coarser than the
+            pixel pitch (5 nm vs ~0.4 nm here) this uses every pixel and lowers noise
+            by about ``sqrt(pixels per bin)``; ``"linear"`` keeps the noise of single
+            pixels.
+
+        Raises
+        ------
+        ValueError
+            If the new grid reaches outside the measured range, or a ``"mean"`` bin
+            holds no pixel.
+        """
+        new = _grid(start, stop, step, wavelength)
+        w = self.wavelength
+        if new[0] < w[0] or new[-1] > w[-1]:
+            raise ValueError(f"grid {new[0]}..{new[-1]} outside measured {w[0]}..{w[-1]}")
+        if method == "linear":
+            counts = np.stack([np.interp(new, w, c) for c in self.counts])
+        elif method == "mean":
+            if new.size < 2:
+                raise ValueError("method='mean' needs at least two grid points")
+            # Bin i is [edge_i, edge_{i+1}), edges halfway between grid points.
+            edges = np.concatenate([[1.5 * new[0] - 0.5 * new[1]], (new[1:] + new[:-1]) / 2,
+                                    [1.5 * new[-1] - 0.5 * new[-2]]])
+            idx = np.searchsorted(w, edges)
+            n = np.diff(idx)
+            if np.any(n == 0):
+                raise ValueError(f"empty bin at {new[np.flatnonzero(n == 0)[0]]}; "
+                                 "step finer than pixel pitch, use method='linear'")
+            csum = np.concatenate([np.zeros((len(self), 1)), np.cumsum(self.counts, 1)], 1)
+            counts = (csum[:, idx[1:]] - csum[:, idx[:-1]]) / n
+        else:
+            raise ValueError(f"method must be 'linear' or 'mean', got {method!r}")
+        return replace(self, wavelength=new, counts=counts)
+
+    def smooth(self, width: float, method: str = "savgol", order: int = 3) -> SpectraSet:
+        """Smooth every spectrum along wavelength.
+
+        Apply on the native pixels, before :meth:`resample`: the filter then sees all
+        the data, and ``"mean"`` resampling afterwards adds little further blur.
+
+        Parameters
+        ----------
+        width : float
+            Window in wavelength units (nm). ``"savgol"``: full window length, rounded
+            to an odd number of pixels. ``"gaussian"``: FWHM of the kernel.
+            Features narrower than about ``width`` get damped, so keep it below the
+            narrowest real feature (resonance FWHM); noise with a period longer than
+            ``width`` passes through.
+        method : {"savgol", "gaussian"}
+            ``"savgol"``: Savitzky-Golay, a local polynomial fit of degree ``order``
+            that keeps peak height and width much better than a moving average of
+            the same length; edges use the fit of the first/last full window.
+            ``"gaussian"``: normalized Gaussian convolution; smoother result, but it
+            broadens peaks.
+        order : int, default 3
+            Polynomial degree for ``"savgol"``.
+        """
+        w = self.wavelength
+        dw = float(np.mean(np.diff(w)))
+        if width <= 0:
+            raise ValueError(f"width must be positive, got {width}")
+        if method == "savgol":
+            n = int(round(width / dw)) // 2 * 2 + 1      # odd pixel count
+            n = max(n, order + 1 + order % 2)              # odd and > order
+            counts = _savgol(self.counts, n, order)
+        elif method == "gaussian":
+            sigma = width / dw / (2 * math.sqrt(2 * math.log(2)))
+            half = max(int(math.ceil(4 * sigma)), 1)
+            k = np.exp(-0.5 * (np.arange(-half, half + 1) / sigma) ** 2)
+            norm = np.convolve(np.ones(w.size), k, "same")
+            counts = np.stack([np.convolve(c, k, "same") / norm for c in self.counts])
+        else:
+            raise ValueError(f"method must be 'savgol' or 'gaussian', got {method!r}")
+        if counts.shape[1] != w.size:
+            raise ValueError(f"window ({width} nm) longer than the spectrum")
+        return replace(self, counts=counts)
+
     def to_dict(self) -> dict:
         """Plain arrays, e.g. for ``np.savez(path, **s.to_dict())``."""
         return dict(wavelength=self.wavelength, counts=self.counts,
@@ -309,8 +403,44 @@ class SpectraSet:
                     values=self.values, integration_time=self.integration_time)
 
 
+def _savgol(y: np.ndarray, n: int, order: int) -> np.ndarray:
+    """Savitzky-Golay along axis 1 of ``(N, P)``; window ``n`` odd pixels, ``P >= n``."""
+    P = y.shape[1]
+    if P < n:
+        return y[:, :0]  # caller reports the error
+    h = n // 2
+    x = np.arange(-h, h + 1, dtype=float)
+    V = np.vander(x, order + 1, increasing=True)          # (n, order+1)
+    fit = np.linalg.pinv(V)                               # rows: polynomial coefficients
+    win = np.lib.stride_tricks.sliding_window_view(y, n, axis=1)   # (N, P-n+1, n)
+    out = np.empty_like(y, dtype=float)
+    out[:, h:P - h] = win @ fit[0]                        # value at window centre
+    # Edges: evaluate the polynomial fitted to the first/last full window.
+    xe = np.arange(-h, 0, dtype=float)
+    Ve = np.vander(xe, order + 1, increasing=True)
+    out[:, :h] = (y[:, :n] @ fit.T) @ Ve.T
+    out[:, P - h:] = (y[:, P - n:] @ fit.T) @ np.vander(-xe[::-1], order + 1, increasing=True).T
+    return out
+
+
+def _grid(start, stop, step, wavelength) -> np.ndarray:
+    if wavelength is not None:
+        if any(v is not None for v in (start, stop, step)):
+            raise ValueError("give either start/stop/step or wavelength, not both")
+        new = np.asarray(wavelength, dtype=float).ravel()
+        if new.size == 0 or np.any(np.diff(new) <= 0):
+            raise ValueError("wavelength must be non-empty and strictly increasing")
+        return new
+    if None in (start, stop, step) or step <= 0 or stop < start:
+        raise ValueError(f"need start <= stop and step > 0, got {start}, {stop}, {step}")
+    n = int(round((stop - start) / step))
+    return float(start) + float(step) * np.arange(n + 1)
+
+
 def read_folder(folder: str | os.PathLike, pattern: str = "*.txt", *, sort: bool = True,
                 recursive: bool = False, wavelength_rtol: float = 1e-6,
+                smooth: float | None = None,
+                grid: tuple[float, float, float] | None = None, method: str = "linear",
                 dtype=np.float64) -> SpectraSet:
     """Read every spectrum in ``folder`` into one :class:`SpectraSet`.
 
@@ -326,6 +456,14 @@ def read_folder(folder: str | os.PathLike, pattern: str = "*.txt", *, sort: bool
     wavelength_rtol : float
         All files must share one wavelength axis to this relative tolerance;
         raises ``ValueError`` naming the first file that differs otherwise.
+    smooth : float, optional
+        Savitzky-Golay window in nm, applied on the native pixels before ``grid``;
+        see :meth:`SpectraSet.smooth` for other filters. ``None`` does not smooth.
+    grid : (start, stop, step), optional
+        Resample right after reading, e.g. ``(400, 800, 5)``; see
+        :meth:`SpectraSet.resample`. ``None`` keeps the native pixels.
+    method : {"linear", "mean"}
+        Resampling method when ``grid`` is given.
     """
     folder = Path(folder)
     paths = sorted((folder.rglob if recursive else folder.glob)(pattern))
@@ -346,4 +484,8 @@ def read_folder(folder: str | os.PathLike, pattern: str = "*.txt", *, sort: bool
     if np.unique(t[np.isfinite(t)]).size > 1:
         warnings.warn(f"{folder.name}: integration times differ ({sorted(set(t.tolist()))} s); "
                       "raw counts are not comparable, consider .per_second()", stacklevel=2)
+    if smooth is not None:
+        out = out.smooth(smooth)
+    if grid is not None:
+        out = out.resample(*grid, method=method)
     return out.sorted() if sort else out

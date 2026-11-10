@@ -70,3 +70,58 @@ def test_mismatched_wavelengths_raise(tmp_path):
     _write(tmp_path, "a_x2__0__10-00-01-000", np.zeros(16), w=W + 1.0)
     with pytest.raises(ValueError, match="wavelength axis"):
         read_folder(tmp_path)
+
+
+def test_resample_linear_and_mean(tmp_path):
+    w = np.round(np.arange(380.0, 820.0, 0.5), 3)
+    _write(tmp_path, "a_x1__0__10-00-00-000", 2.0 * w + 1.0, w=w)
+    s = read_folder(tmp_path)
+
+    lin = s.resample(400, 800, 5)
+    np.testing.assert_allclose(lin.wavelength, np.arange(400, 801, 5))
+    np.testing.assert_allclose(lin.counts[0], 2.0 * lin.wavelength + 1.0)
+
+    # Bins [w-2.5, w+2.5) on a 0.5 nm grid are symmetric minus one end pixel.
+    mean = read_folder(tmp_path, grid=(400, 800, 5), method="mean")
+    np.testing.assert_allclose(mean.counts[0], 2.0 * (mean.wavelength - 0.25) + 1.0)
+
+    custom = s.resample(wavelength=[450.0, 532.0, 633.0])
+    np.testing.assert_allclose(custom.counts[0], [901.0, 1065.0, 1267.0])
+
+    with pytest.raises(ValueError, match="outside measured"):
+        s.resample(300, 800, 5)
+
+
+# Gaussian trades lower noise for amplitude loss on real features (~2.5% of the
+# 120 nm cosine at 10 nm FWHM), hence the looser bound.
+@pytest.mark.parametrize("method, ratio", [("savgol", 0.35), ("gaussian", 0.5)])
+def test_smooth_keeps_shape_and_reduces_noise(tmp_path, method, ratio):
+    w = np.round(np.arange(400.0, 800.0, 0.4), 3)
+    clean = 50 + 20 * np.cos(2 * np.pi * (w - 400) / 120)        # 120 nm period
+    noisy = clean + np.random.default_rng(0).normal(0, 1.0, w.size)
+    _write(tmp_path, "a_x1__0__10-00-00-000", noisy, w=w)
+    s = read_folder(tmp_path)
+    out = s.smooth(10, method=method).counts[0]
+    inner = slice(30, -30)
+    assert np.std((out - clean)[inner]) < ratio * np.std((noisy - clean)[inner])
+    assert np.max(np.abs(out - clean)[inner]) < 1.5
+
+
+def test_savgol_exact_on_cubic_including_edges(tmp_path):
+    w = np.round(np.arange(400.0, 500.0, 0.5), 3)
+    x = (w - 450) / 50
+    y = 3 + x - 2 * x**2 + 0.5 * x**3
+    _write(tmp_path, "a_x1__0__10-00-00-000", y, w=w)
+    np.testing.assert_allclose(read_folder(tmp_path).smooth(8).counts[0], y, atol=1e-3)
+
+
+def test_mirror_reference_shipped_and_sane():
+    from processing.references import load_mirror, mirror_reflectance
+
+    for aoi in (12, 45):
+        t = load_mirror(aoi)
+        assert t.shape[1] == 4 and np.all(np.diff(t[:, 0]) > 0)
+    R = mirror_reflectance(np.arange(430.0, 901.0, 5.0))
+    assert np.all((R > 0.9) & (R < 1.0))
+    with pytest.raises(ValueError, match="outside"):
+        mirror_reflectance([250.0])

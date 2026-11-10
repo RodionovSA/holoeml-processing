@@ -17,6 +17,8 @@ dependencies = [
     "opencv-python>=5.0.0.93",
     "pyyaml>=6.0.3",
     "phase-shift",
+    "dispertorch",
+    "ridb",
     "tqdm>=4.70.1",
 ]
 
@@ -46,3 +48,5 @@ testpaths = ["tests"]
 
 [tool.uv.sources]
 phase-shift = { git = "https://github.com/RodionovSA/phase-shift" }
+dispertorch = { git = "https://github.com/RodionovSA/dispertorch" }
+ridb = { git = "https://github.com/RodionovSA/ridb" }

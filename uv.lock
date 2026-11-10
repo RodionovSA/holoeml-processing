@@ -530,6 +530,14 @@ wheels = [
 ]
 
 [[package]]
+name = "dispertorch"
+version = "0.1.2"
+source = { git = "https://github.com/RodionovSA/dispertorch#b795f102c6ff4ade9f7c74872eb1c36b3f38166a" }
+dependencies = [
+    { name = "torch" },
+]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -689,12 +697,14 @@ name = "holoeml-processing"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
+    { name = "dispertorch" },
     { name = "jupyter" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "phase-shift" },
     { name = "pyyaml" },
+    { name = "ridb" },
     { name = "torch" },
     { name = "tqdm" },
 ]
@@ -712,6 +722,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dispertorch", git = "https://github.com/RodionovSA/dispertorch" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "matplotlib", specifier = ">=3.11.1" },
     { name = "numpy", specifier = ">=2.5.1" },
@@ -719,6 +730,7 @@ requires-dist = [
     { name = "phase-shift", git = "https://github.com/RodionovSA/phase-shift" },
     { name = "phase-shift", extras = ["cuda"], marker = "extra == 'cuda'", git = "https://github.com/RodionovSA/phase-shift" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "ridb", git = "https://github.com/RodionovSA/ridb" },
     { name = "torch", specifier = ">=2.12" },
     { name = "tqdm", specifier = ">=4.70.1" },
 ]
@@ -2175,6 +2187,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/2c/06/37c1a5557acf449e8
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/71/44ce230e1b7fadd372515a97e32a83011f906ddded8d03e3c6aafbdedbb7/rfc3987_syntax-1.1.0-py3-none-any.whl", hash = "sha256:6c3d97604e4c5ce9f714898e05401a0445a641cfa276432b0a648c80856f6a3f", size = 8046, upload-time = "2025-07-18T01:05:03.843Z" },
 ]
+
+[[package]]
+name = "ridb"
+version = "0.1.0"
+source = { git = "https://github.com/RodionovSA/ridb#0a711db943859b009e531fd4a493b8989b5d62af" }
 
 [[package]]
 name = "rpds-py"
