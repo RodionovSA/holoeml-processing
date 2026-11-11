@@ -52,6 +52,8 @@ from phase_shift import (
 from phase_shift.backend import get_array_module, to_device
 from phase_shift.utils import wrap
 
+from processing.layout import LayoutConfig
+
 Output = Literal["phi", "full"]
 WEIGHTS = ("b_ref", "none")
 OUTPUTS = ("phi", "full")
@@ -166,6 +168,10 @@ class PipelineConfig:
         Passed to :func:`phase_shift.subtract_reference` and
         :func:`phase_shift.align_signs`; a branch choice whose two spreads are
         within this factor is flagged as ambiguous.
+    layout : LayoutConfig
+        Alignment of a whole scan to its GDS layout, run by
+        :func:`processing.interferometer.process_scan` after every wavelength is
+        solved; off by default. Not used by :class:`PhasePipeline` itself.
     """
 
     solver: PhaseConfig = field(default_factory=PhaseConfig)
@@ -174,22 +180,27 @@ class PipelineConfig:
     precision: str = "single"
     weight: str = "b_ref"
     ambiguous_ratio: float = 1.5
+    layout: LayoutConfig = field(default_factory=LayoutConfig)
 
     def __post_init__(self) -> None:
         if self.weight not in WEIGHTS:
             raise ValueError(f"unknown weight {self.weight!r}, expected one of {WEIGHTS}")
+        if isinstance(self.layout, dict):
+            self.layout = LayoutConfig(**self.layout)
 
     @classmethod
     def from_dict(cls, data: dict) -> PipelineConfig:
-        """Build from a plain dict; ``solver`` holds :class:`PhaseConfig` fields and
-        ``carrier`` holds :class:`CarrierConfig` fields."""
+        """Build from a plain dict; ``solver`` holds :class:`PhaseConfig` fields,
+        ``carrier`` :class:`CarrierConfig` fields and ``layout``
+        :class:`~processing.layout.LayoutConfig` fields."""
         data = dict(data)
         solver = dict(data.pop("solver", None) or {})
         for key in ("g", "noise_std"):
             if solver.get(key) is not None:
                 solver[key] = np.asarray(solver[key], dtype=float)
         carrier = CarrierConfig(**(data.pop("carrier", None) or {}))
-        return cls(solver=PhaseConfig(**solver), carrier=carrier, **data)
+        layout = LayoutConfig(**(data.pop("layout", None) or {}))
+        return cls(solver=PhaseConfig(**solver), carrier=carrier, layout=layout, **data)
 
     @classmethod
     def from_yaml(cls, path: str | os.PathLike) -> PipelineConfig:
@@ -205,6 +216,7 @@ class PipelineConfig:
             "ambiguous_ratio": self.ambiguous_ratio,
             "solver": self.solver.to_dict(),
             "carrier": asdict(self.carrier),
+            "layout": self.layout.to_dict(),
         }
 
     def to_yaml(self, path: str | os.PathLike) -> None:

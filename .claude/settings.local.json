@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls phase *)",
+      "Bash(grep -rn \"def \\\\|degree\\\\|window\" phase/carrier*.py)"
+    ]
+  }
+}

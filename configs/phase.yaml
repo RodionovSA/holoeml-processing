@@ -8,7 +8,7 @@ ambiguous_ratio: 1.5  # flag a sign choice whose two spreads are within this fac
 # Optional carrier removal after reference subtraction (phase_shift.remove_carrier)
 carrier:
   enabled: false
-  degree: 1           # total polynomial degree: 0 piston, 1 tilt, 2 + defocus/astigmatism
+  degree: 2           # total polynomial degree: 0 piston, 1 tilt, 2 + defocus/astigmatism
   window: 5           # odd window (px) for the starting estimate
   subsample: 4        # start-grid stride; phase must change < pi over this many px
   max_iter: 20        # Newton steps per grid
@@ -25,12 +25,40 @@ carrier:
 solver:
   use_alpha: true
   gain_mode: joint    # joint, none
-  method: vp_aia      # aia, vp_aia
+  method: aia      # aia, vp_aia
   method_kwargs:
     iters: 30
     tol: 1.0e-4
-    basis: poly
-    basis_kwargs: {degree: 2}
-    orders: 1
-    order_tol: 0.0
-    crop: 100
+    # basis: poly
+    # basis_kwargs: {degree: 2}
+    # orders: 3
+    # order_tol: 0.0
+    # crop: 100
+
+# Optional alignment of the whole scan to its GDS layout (processing.layout), run after
+# every wavelength is solved. Output maps share one grid in layout orientation and get
+# masks for every structure, the glass, particles and extended non-uniformities.
+layout:
+  enabled: false
+  gds: null               # layout file; --gds on the command line overrides it and enables this
+  cell: TOP
+  marker_size_um: 80      # top-level squares of this size are markers; the 4 outermost define the frame
+  exclude_cells: [TEXT]   # references that are not structures
+  rotation: 0             # layout rotation seen on the camera, deg counter-clockwise (0, 90, 180, 270)
+  mirror: true            # camera sees the layout mirrored left-right (applied before rotation)
+  margin_um: 50           # aligned grid = marker frame + margin; null = whole camera image
+  pixel_um: null          # aligned grid pixel; null = camera pixel from the marker fit
+  guard_um: 6             # gap around structures not counted as glass (edge halos)
+  max_shift_um: 10        # largest per-wavelength drift searched for
+  min_match: 0.3          # edge correlation below which a structure is not used for the drift
+  plane:
+    enabled: true         # subtract a surface fitted on the clean glass from phi
+    degree: 1             # 0 piston, 1 plane, 2 + curvature
+  defects:
+    particle_window_um: 5   # local glass window a pixel is compared with
+    particle_k: 5           # particle: deviation > k robust sigmas (phase or T), mean over wavelengths
+    extended_window_um: 30  # smoothing window for extended non-uniformities (e.g. polymer)
+    extended_rad: 0.1       # extended: smoothed glass phase off the glass level by more than this
+    grow_um: 1              # dilate both masks
+    max_wavelengths: 20     # wavelengths used for the statistics, evenly spread
+  keep_unaligned: false   # keep *_unaligned.h5 after alignment
